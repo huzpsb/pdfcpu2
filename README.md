@@ -10,11 +10,18 @@ pdfcpu2 ocr scan.pdf scan_ocr.pdf && pdfcpu2 extract -m text scan_ocr.pdf -
 
 That's a complete scans → searchable PDF → plain text pipeline in one executable. Perfect for RAG ingestion, agent tooling and batch document processing.
 
+| `pdfcpu2 extract -m text` — strip text from any PDF | `pdfcpu2 ocr` — invisible, selectable text layer on scans |
+| --- | --- |
+| ![Text extraction demo](media/extract.png) | ![OCR text layer](media/ocr.png) |
+
+
 ## Why pdfcpu2
 
 - **Single binary, zero dependencies.** The PP-OCRv6 det+rec models (~6 MB) are embedded in the executable. Runs offline forever — no API keys, no tokens, no rate limits, no data leaving your machine. Windows / Linux / macOS, amd64 / arm64.
 - **Go native inference.** The OCR models run on a pure Go engine — fp32 scalar math, goroutine-parallel, no cgo, no ONNX runtime, no Python.
 - **Beats GPT-5.5 at OCR.** On PaddlePaddle's published benchmark, PP-OCR models outperform every tested general-purpose VLM — on text *detection* by a factor of ~2:
+
+  ![PP-OCRv6 vs general-purpose VLMs](media/pp.png)
 
   | Model | Text detection | Text recognition |
   | --- | --- | --- |
