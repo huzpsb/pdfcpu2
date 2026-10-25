@@ -12,6 +12,9 @@ dist/
 # Vendored dependencies: regenerate with `go mod vendor`
 vendor/
 
+# Wiki
+wiki_stage/
+
 # Stats
 _scripts/*.csv
 

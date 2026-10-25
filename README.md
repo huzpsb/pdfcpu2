@@ -1,25 +1,32 @@
 # pdfcpu2
 
-**A PDF toolkit built for the AI era.** pdfcpu2 is a modernized fork of [pdfcpu](https://github.com/pdfcpu/pdfcpu) — everything upstream does, plus the two things modern pipelines actually need: **offline OCR** and **PDFBox-grade text extraction**, in one static binary.
+[中文版](README_CN.md)
 
-> 🚀 **Cross-platform, single-file PDF OCR & text-extraction pipeline — no Python, no cgo, no external services. Go native. Offline. CJK friendly.**
+pdfcpu2 is a fork of pdfcpu that adds offline OCR and text extraction while retaining the existing PDF processing commands. It builds as a single static binary, with no Python, cgo, or external services required.
 
 ```sh
 pdfcpu2 ocr scan.pdf scan_ocr.pdf && pdfcpu2 extract -m text scan_ocr.pdf -
 ```
 
-That's a complete scans → searchable PDF → plain text pipeline in one executable. Perfect for RAG ingestion, agent tooling and batch document processing.
+This adds a searchable text layer to a scanned PDF and extracts the resulting text. The same pipeline can be used for RAG ingestion, agent tools, and batch document processing.
 
-| `pdfcpu2 extract -m text` — strip text from any PDF | `pdfcpu2 ocr` — invisible, selectable text layer on scans |
+| `pdfcpu2 extract -m text`: extract text from a PDF | `pdfcpu2 ocr`: add an invisible, selectable text layer to scans |
 | --- | --- |
 | ![Text extraction demo](media/extract.png) | ![OCR text layer](media/ocr.png) |
 
+## Documentation
 
-## Why pdfcpu2
+The [project wiki](https://github.com/huzpsb/pdfcpu2/wiki) contains about 60 pages of documentation, including CLI usage, Go API examples, and getting-started guides.
 
-- **Single binary, zero dependencies.** The PP-OCRv6 det+rec models (~6 MB) are embedded in the executable. Runs offline forever — no API keys, no tokens, no rate limits, no data leaving your machine. Windows / Linux / macOS, amd64 / arm64.
-- **Go native inference.** The OCR models run on a pure Go engine — fp32 scalar math, goroutine-parallel, no cgo, no ONNX runtime, no Python.
-- **Beats GPT-5.5 at OCR.** On PaddlePaddle's published benchmark, PP-OCR models outperform every tested general-purpose VLM — on text *detection* by a factor of ~2:
+## Motivation
+
+Horst Rutter, the maintainer of pdfcpu, is a member of the PDF Association. I admire his commitment to the PDF standard. But I genuinely need text extraction, OCR, and related features in my own work. Respect for his work does not remove that need, so I added them here and use them.
+
+## Features
+
+- **Single binary.** The PP-OCRv6 detection and recognition models (about 6 MB) are embedded in the executable. OCR runs offline without API keys, tokens, rate limits, or data leaving the local machine. Windows, Linux, and macOS are supported on amd64 and arm64.
+- **Pure Go OCR inference.** The models run on a pure Go engine using fp32 scalar math and goroutine-based parallelism. No cgo, ONNX Runtime, or Python is required.
+- **OCR benchmarks.** PaddlePaddle's published benchmark reports the following results for PP-OCRv6 and several general-purpose VLMs:
 
   ![PP-OCRv6 vs general-purpose VLMs](media/pp.png)
 
@@ -32,28 +39,28 @@ That's a complete scans → searchable PDF → plain text pipeline in one execut
   | GPT-5.5 | 45.6 | 64.2 |
   | Qwen3-VL-235B | 38.3 | 74.9 |
 
-  Source: [PP-OCRv6 model card](https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_small_rec_onnx) — and unlike the VLMs, it costs nothing per page.
-- **PDFBox-grade text extraction.** `extract -m text` is aligned with Apache PDFBox's default extractor, tuned via differential testing against PDFBox over a corpus of **1200+ real-world Chinese PDFs spanning different eras** — from decades-old generators to modern ones.
-- **CJK friendly.** ToUnicode CMaps (incl. Type42, array-form `bfrange`), embedded TrueType cmaps, legacy GBK/Big5, Adobe-GB1/CNS1 CID fallbacks, Latin-1 last resort — plus PP-OCR models trained on Chinese + English.
-- **Idempotent OCR.** Every processed image is marked; re-running `ocr` only touches new content. Text is placed as an invisible layer mapped through each image's page transform — so selection lands exactly on the visible glyphs.
-- **Pipeline native.** stdin/stdout streaming (`-`), page selection, JSON output, `context.Context` cancellation in the Go API.
+  Source: [PP-OCRv6 model card](https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_small_rec_onnx). The specialized models also have no per-page API cost.
+- **PDFBox-compatible text extraction.** `extract -m text` follows Apache PDFBox's default extractor. Behavior has been tuned through differential testing against PDFBox on a corpus of more than 1,200 real-world Chinese PDFs from different periods and generators.
+- **CJK support.** Text extraction handles ToUnicode CMaps (including Type42 and array-form `bfrange`), embedded TrueType cmaps, legacy GBK/Big5, Adobe-GB1/CNS1 CID fallbacks, and a Latin-1 last resort. The OCR models are trained for Chinese and English.
+- **Repeatable OCR.** Processed images are marked, so running `ocr` again only processes new content. Text is added as an invisible layer mapped through each image's page transform, keeping selection aligned with the visible glyphs.
+- **CLI and API integration.** Supports stdin/stdout streaming (`-`), page selection, JSON output, and `context.Context` cancellation in the Go API.
 
-## Fork features
+## Additional commands
 
 | Feature | Command | Status |
 | --- | --- | --- |
-| Plain-text extraction (PDFBox-compatible) | `pdfcpu2 extract -m text` | ✅ Available |
-| Invisible OCR text layer for scanned PDFs | `pdfcpu2 ocr` | ✅ Available |
-| Page rendering / rasterization | `pdfcpu2 render` | 🚧 Planned |
+| Plain-text extraction (PDFBox-compatible) | `pdfcpu2 extract -m text` | Available |
+| Invisible OCR text layer for scanned PDFs | `pdfcpu2 ocr` | Available |
+| Page rendering / rasterization | `pdfcpu2 render` | Planned |
 
 ```sh
 # Text extraction
 pdfcpu2 extract -m text in.pdf out.txt          # whole document
 pdfcpu2 extract -m text -p 1-3 in.pdf -         # pages 1-3 to stdout
 
-# OCR — make scans searchable & extractable
+# OCR: make scans searchable and extractable
 pdfcpu2 ocr scan.pdf scan_ocr.pdf               # all pages
-pdfcpu2 ocr scan.pdf scan_ocr.pdf -pages 1-10   # selection
+pdfcpu2 ocr scan.pdf scan_ocr.pdf -pages 1-10   # selected pages
 ```
 
 As Go code:
@@ -65,13 +72,13 @@ ctx := context.Background()
 n, err := api.OCRFile(ctx, "scan.pdf", "scan_ocr.pdf", nil, conf) // images processed
 err = api.ExtractTextFile(ctx, "scan_ocr.pdf", "out.txt", nil, nil, conf)
 
-// or structured, with line coordinates:
+// Or extract structured text with line coordinates:
 texts, err := api.ExtractText(ctx, rs, []string{"1-3"}, nil, conf) // []pdfcpu.PageText
 ```
 
-## Everything else
+## Existing PDF commands
 
-The full upstream command set is intact and maintained — validate, optimize, merge/split/trim, pages & boxes, stamps & watermarks, forms, encryption, permissions, signatures, attachments, create, n-up/booklet/poster, and more:
+The existing command set remains available, including validation, optimization, merge/split/trim, pages and boxes, stamps and watermarks, forms, encryption, permissions, signatures, attachments, PDF creation, n-up, booklets, and posters.
 
 ```sh
 pdfcpu2 validate in.pdf
@@ -80,13 +87,11 @@ pdfcpu2 encrypt --opw owner --upw user in.pdf out.pdf   # AES-256
 pdfcpu2 stamp add "CONFIDENTIAL" "pos:tr, op:.6" in.pdf out.pdf
 ```
 
-📖 **[Full documentation — the GitHub wiki](https://github.com/huzpsb/pdfcpu2/wiki)**: ~60 pages covering every command with both CLI usage and Go API samples, plus getting-started guides. For general PDF processing concepts, the [upstream docs](https://pdfcpu.io) are an excellent companion.
-
 ## Installation
 
 ```sh
 go install github.com/huzpsb/pdfcpu2/cmd/pdfcpu2@latest
-# or from a checkout:
+# Or from a checkout:
 go mod vendor && go build ./cmd/pdfcpu2
 ```
 
@@ -98,8 +103,12 @@ go get github.com/huzpsb/pdfcpu2
 
 ## Relationship with upstream
 
-Hard fork of [pdfcpu](https://github.com/pdfcpu/pdfcpu) (Apache 2.0), maintained independently — not guaranteed to track upstream releases, but actively maintained: issues and reasonable feature requests welcome. Upstream behavior and API conventions stay compatible; new code follows the upstream layering (`model` → `pkg/pdfcpu` → `pkg/api` → `pkg/cli`).
+pdfcpu2 is an independently maintained hard fork of pdfcpu, licensed under Apache 2.0. It is not guaranteed to track upstream releases. Issues and reasonable feature requests are welcome.
+
+Existing behavior and API conventions remain compatible where practical. New code follows the existing package layering: `model` → `pkg/pdfcpu` → `pkg/api` → `pkg/cli`.
+
+Upstream project: [pdfcpu](https://github.com/pdfcpu/pdfcpu).
 
 ## License
 
-Apache License 2.0, same as upstream (see `LICENSE.txt`). The embedded Adobe CID→Unicode tables are derived from Adobe's UCS2 CMap resources (Adobe BSD-style license; copyright notice retained in the generated file's header).
+Apache License 2.0, same as upstream (see `LICENSE.txt`). The embedded Adobe CID-to-Unicode tables are derived from Adobe's UCS2 CMap resources (Adobe BSD-style license; copyright notice retained in the generated file's header).
