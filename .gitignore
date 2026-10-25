@@ -18,3 +18,7 @@ _scripts/*.csv
 # Local scratch
 .trash_can/
 out_tmp/
+
+# Confidential OCR runtime experiments (never commit; deleted after Go port)
+ocr_rt/
+_scripts/ocr/

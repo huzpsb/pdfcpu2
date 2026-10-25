@@ -1,4 +1,4 @@
-﻿/*
+/*
 Copyright 2025 The pdfcpu Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -109,6 +109,7 @@ func commands() []*cobra.Command {
 		pagemodeCmd(),
 		pagelayoutCmd(),
 		viewerprefCmd(),
+		ocrCmd(),
 
 		// Resource commands.
 		importCmd(),

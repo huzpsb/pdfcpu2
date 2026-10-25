@@ -247,6 +247,7 @@ const (
 	VALIDATESIGNATURES
 	REMOVESIGNATURES
 	ADDSIGNATURE
+	OCRPDF
 )
 
 // AllowRemoveEncryption enables removing encryption during validation.

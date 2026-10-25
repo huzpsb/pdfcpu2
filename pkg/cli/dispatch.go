@@ -90,7 +90,7 @@ var dispatchTable = map[model.CommandMode]dispatchFunc{
 	model.LISTIMAGES:              listImages,
 	model.UPDATEIMAGES:            updateImages,
 	model.EXTRACTIMAGES:           extractImages,
-	model.EXTRACTFONTS:            extractFonts,
+	model.OCRPDF:                   ocrPDF,	model.EXTRACTFONTS:            extractFonts,
 	model.EXTRACTPAGES:            extractPages,
 	model.EXTRACTCONTENT:          extractContent,
 	model.EXTRACTMETADATA:         extractMetadata,
