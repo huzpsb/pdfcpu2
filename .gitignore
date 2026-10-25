@@ -1,0 +1,20 @@
+# Mac
+**/.DS_Store
+**/._*DS_Store
+
+# VSCode
+.vscode/*
+
+# Build artifacts
+*.exe
+dist/
+
+# Vendored dependencies: regenerate with `go mod vendor`
+vendor/
+
+# Stats
+_scripts/*.csv
+
+# Local scratch
+.trash_can/
+out_tmp/

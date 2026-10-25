@@ -1,0 +1,109 @@
+/*
+Copyright 2026 The pdfcpu Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package pdfcpu
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+)
+
+func TestMergeXRefTablesReturnsCancellation(t *testing.T) {
+	c, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if err := MergeXRefTables(c, "", nil, nil, false, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+}
+
+func testMergeContext(t *testing.T) *model.Context {
+	t.Helper()
+	conf := model.NewDefaultConfiguration()
+	conf.ValidationMode = model.ValidationRelaxed
+	ctx, err := ReadFile(t.Context(), filepath.Join("..", "samples", "create", "primitives", "textAndAlignment.pdf"), conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
+}
+
+func TestMergeXRefTablesPageTreeErrorIncludesMergeContext(t *testing.T) {
+	src := testMergeContext(t)
+	dest := testMergeContext(t)
+	dest.PageCount++
+
+	err := MergeXRefTables(t.Context(), "source.pdf", src, dest, false, false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "merge page tree: append source pages") {
+		t.Fatalf("expected merge page tree context, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "corrupt page node") {
+		t.Fatalf("expected lower page tree context, got %q", err.Error())
+	}
+}
+
+func TestMergeXRefTablesZipPageTreeErrorIncludesMergeContext(t *testing.T) {
+	src := testMergeContext(t)
+	dest := testMergeContext(t)
+	dest.RootDict = nil
+	dest.Root = nil
+
+	err := MergeXRefTables(t.Context(), "source.pdf", src, dest, true, false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "merge page tree: zip source pages") {
+		t.Fatalf("expected zip merge page tree context, got %q", err.Error())
+	}
+}
+
+func TestMergeXRefTablesNilContextErrors(t *testing.T) {
+	err := MergeXRefTables(t.Context(), "source.pdf", nil, testMergeContext(t), false, false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "merge: missing context") {
+		t.Fatalf("expected missing context error, got %q", err.Error())
+	}
+
+	src := testMergeContext(t)
+	src.Root = nil
+	err = MergeXRefTables(t.Context(), "source.pdf", src, testMergeContext(t), false, false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "missing source root") {
+		t.Fatalf("expected missing source root error, got %q", err.Error())
+	}
+}
+
+func TestEnsureOutlinesNilContextReturnsError(t *testing.T) {
+	err := EnsureOutlines(t.Context(), nil, "source.pdf", false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "ensure outlines: missing context") {
+		t.Fatalf("expected missing context error, got %q", err.Error())
+	}
+}

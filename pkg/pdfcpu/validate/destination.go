@@ -1,0 +1,304 @@
+/*
+Copyright 2018 The pdfcpu Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package validate
+
+import (
+	"fmt"
+
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+)
+
+func indirectRefObjectNumber(o types.Object) (int, bool) {
+	ir, ok := o.(types.IndirectRef)
+	if !ok {
+		return 0, false
+	}
+	return ir.ObjectNumber.Value(), true
+}
+
+func dictEntryContext(dictName, entryName string, o types.Object) string {
+	context := dictName + "." + entryName
+	if objNr, ok := indirectRefObjectNumber(o); ok {
+		context = fmt.Sprintf("%s obj#%d", context, objNr)
+	}
+	return context
+}
+
+func objectContext(context string, o types.Object) string {
+	if objNr, ok := indirectRefObjectNumber(o); ok {
+		return fmt.Sprintf("%s obj#%d", context, objNr)
+	}
+	return context
+}
+
+func validateDestinationArrayFirstElement(
+	xRefTable *model.XRefTable,
+	a types.Array,
+	ownerObjNr int,
+) (o types.Object, err error) {
+	objNr := validationObjectNumber(ownerObjNr, a[0])
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+	}()
+
+	o, err = xRefTable.Dereference(a[0])
+	if err != nil {
+		return nil, fmt.Errorf("destination array[0]: dereference page: %w", err)
+	}
+	if o == nil {
+		return nil, nil
+	}
+
+	s := "destination array: first element is not a page dict: " + a.String()
+
+	switch o := o.(type) {
+
+	case types.Dict:
+		dictType, _, typeErr := xRefTable.DereferenceNameEntry(o, "Type")
+		if typeErr != nil {
+			if xRefTable.ValidationMode == model.ValidationRelaxed {
+				model.ShowDigestedSpecViolation(s)
+				return nil, nil
+			}
+			return o, fmt.Errorf("destination array[0] Type: %w", typeErr)
+		}
+		if dictType == nil || (dictType.Value() != "Page" && dictType.Value() != "Pages") {
+			if xRefTable.ValidationMode == model.ValidationRelaxed {
+				model.ShowDigestedSpecViolation(s)
+				return nil, nil
+			}
+			dictTypeString := "<missing>"
+			if dictType != nil {
+				dictTypeString = dictType.Value()
+			}
+			err = fmt.Errorf("destination array[0]: expected page dict, got dict type %q", dictTypeString)
+		}
+
+	default:
+		if xRefTable.ValidationMode == model.ValidationRelaxed {
+			model.ShowDigestedSpecViolation(s)
+			return nil, nil
+		}
+		err = fmt.Errorf("destination array[0]: expected page dict, got %T", o)
+	}
+
+	return o, err
+}
+
+func validateDestinationArrayLength(a types.Array) bool {
+	return len(a) >= 2 && len(a) <= 6
+}
+
+func validateDestType(a types.Array, destType types.Name) error {
+	switch destType {
+	case "Fit":
+	case "FitB":
+		if len(a) > 2 {
+			return fmt.Errorf("destination array mode %s: invalid length %d", destType, len(a))
+		}
+	case "FitH":
+	case "FitV":
+	case "FitBH":
+	case "FitBV":
+		if len(a) > 3 {
+			return fmt.Errorf("destination array mode %s: invalid length %d", destType, len(a))
+		}
+	case "XYZ":
+		if len(a) > 5 {
+			return fmt.Errorf("destination array mode %s: invalid length %d", destType, len(a))
+		}
+	case "FitR":
+		if len(a) > 6 {
+			return fmt.Errorf("destination array mode %s: invalid length %d", destType, len(a))
+		}
+	default:
+		return fmt.Errorf("destination array mode: invalid mode %q", destType)
+	}
+
+	return nil
+}
+
+func validateDestinationArray(xRefTable *model.XRefTable, a types.Array, ownerObjNr int) (err error) {
+	defer func() {
+		err = model.WithValidationErrorObject(err, ownerObjNr)
+	}()
+
+	if !validateDestinationArrayLength(a) {
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return fmt.Errorf("destination array: invalid length %d", len(a))
+		}
+		return nil
+	}
+
+	// Validate the local destination page.
+	o, err := validateDestinationArrayFirstElement(xRefTable, a, ownerObjNr)
+	if err != nil || o == nil {
+		return err
+	}
+
+	return validateDestinationArrayMode(xRefTable, a, ownerObjNr)
+}
+
+func validateDestinationOperands(x *model.XRefTable, a types.Array, name types.Name, ownerObjNr int) error {
+	// see 12.3.2.2, Table 149
+	length := 2
+	switch name {
+	case "FitH", "FitV", "FitBH", "FitBV":
+		length = 3
+	case "XYZ":
+		length = 5
+	case "FitR":
+		length = 6
+	}
+	if len(a) != length {
+		err := fmt.Errorf("destination array mode %s: invalid length %d, expected %d", name, len(a), length)
+		return model.WithValidationErrorObject(err, ownerObjNr)
+	}
+	for i := 2; i < len(a); i++ {
+		o, err := x.Dereference(a[i])
+		if err == nil && (o != nil || name == "FitR") {
+			_, err = x.DereferenceNumber(o)
+		}
+		if err != nil {
+			err = fmt.Errorf("destination array mode %s operand[%d]: %w", name, i, err)
+			return model.WithValidationErrorObject(err, validationObjectNumber(ownerObjNr, a[i]))
+		}
+	}
+	return nil
+}
+
+func validateDestinationArrayMode(xRefTable *model.XRefTable, a types.Array, ownerObjNr int) error {
+	// see 12.3.2.2, Table 149
+	o, err := xRefTable.Dereference(a[1])
+	if err != nil {
+		err = fmt.Errorf("destination array[1]: %w", err)
+		return model.WithValidationErrorObject(err, validationObjectNumber(ownerObjNr, a[1]))
+	}
+	name, ok := o.(types.Name)
+	if !ok {
+		err = fmt.Errorf("destination array[1]: expected name, got %T", o)
+		return model.WithValidationErrorObject(err, validationObjectNumber(ownerObjNr, a[1]))
+	}
+
+	if err := validateDestType(a, name); err != nil {
+		return err
+	}
+	err = validateDestinationOperands(xRefTable, a, name, ownerObjNr)
+	if err != nil && xRefTable.ValidationMode == model.ValidationRelaxed {
+		xRefTable.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
+		return nil
+	}
+	return err
+}
+
+func validateDestinationDict(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int) (err error) {
+	defer func() {
+		err = model.WithValidationErrorObject(err, ownerObjNr)
+	}()
+
+	// D, required, array
+	o, _ := d.Find("D")
+	destinationObjNr := validationObjectNumber(ownerObjNr, o)
+	a, err := validateArrayEntry(
+		xRefTable, d, ownerObjNr, "DestinationDict", "D", REQUIRED, model.V10, nil,
+	)
+	if err != nil || a == nil {
+		if err != nil {
+			return fmt.Errorf("%s: %w", dictEntryContext("destination dictionary", "D", o), err)
+		}
+		return nil
+	}
+
+	if err := validateDestinationArray(xRefTable, a, destinationObjNr); err != nil {
+		return fmt.Errorf("%s: %w", dictEntryContext("destination dictionary", "D", o), err)
+	}
+
+	return nil
+}
+
+func validateDestination(
+	xRefTable *model.XRefTable,
+	o types.Object,
+	ownerObjNr int,
+	forAction bool,
+) (name string, err error) {
+	objNr := validationObjectNumber(ownerObjNr, o)
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+	}()
+
+	o, err = xRefTable.Dereference(o)
+	if err != nil {
+		return "", fmt.Errorf("destination: dereference: %w", err)
+	}
+	if o == nil {
+		return "", nil
+	}
+
+	switch o := o.(type) {
+
+	case types.Name:
+		return o.Value(), nil
+
+	case types.StringLiteral:
+		return types.StringLiteralToString(o)
+
+	case types.HexLiteral:
+		return types.HexLiteralToString(o)
+
+	case types.Dict:
+		if forAction {
+			return "", fmt.Errorf("destination: action destination cannot be dict")
+		}
+		err = validateDestinationDict(xRefTable, o, objNr)
+
+	case types.Array:
+		err = validateDestinationArray(xRefTable, o, objNr)
+
+	default:
+		err = fmt.Errorf("destination: unsupported object type %T", o)
+
+	}
+
+	return "", err
+}
+
+func validateActionDestinationEntry(xRefTable *model.XRefTable, d types.Dict, dictName string, entryName string, required bool, sinceVersion model.Version) error {
+	// see 12.3.2
+
+	rawEntry := d[entryName]
+	o, err := validateEntry(xRefTable, d, 0, dictName, entryName, required, sinceVersion)
+	if err != nil {
+		return fmt.Errorf("%s: %w", dictEntryContext(dictName, entryName, rawEntry), err)
+	}
+	if o == nil {
+		return nil
+	}
+
+	name, err := validateDestination(xRefTable, rawEntry, 0, true)
+	if err != nil {
+		return fmt.Errorf("%s: %w", dictEntryContext(dictName, entryName, rawEntry), err)
+	}
+
+	if len(name) > 0 && xRefTable.IsMerging() {
+		nm := xRefTable.NameRef("Dests")
+		nm.Add(name, d)
+	}
+
+	return nil
+}

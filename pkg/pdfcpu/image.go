@@ -1,0 +1,543 @@
+/*
+Copyright 2021 The pdfcpu Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package pdfcpu
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
+	"github.com/pdfcpu/pdfcpu/pkg/filter"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+)
+
+func imageBooleanEntry(xRefTable *model.XRefTable, sd *types.StreamDict, key string, objNr int) (bool, error) {
+	b, _, err := xRefTable.DereferenceBooleanEntry(sd.Dict, key)
+	if err != nil {
+		return false, fmt.Errorf("image obj#%d entry %q: %w", objNr, key, err)
+	}
+	return b != nil && b.Value(), nil
+}
+
+// Images returns all embedded images of ctx and supports cancellation.
+func Images(c context.Context, ctx *model.Context, selectedPages types.IntSet) ([]map[int]model.Image, *ImageListMaxLengths, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
+	}
+	pageNrs := []int{}
+	for k, v := range selectedPages {
+		if !v {
+			continue
+		}
+		pageNrs = append(pageNrs, k)
+	}
+	sort.Ints(pageNrs)
+
+	mm := []map[int]model.Image{}
+	var (
+		maxLenPageNr, maxLenObjNr, maxLenID, maxLenSize, maxLenFilters int
+	)
+
+	maxPageNr := 0
+
+	for _, i := range pageNrs {
+		if err := contextutil.Check(c); err != nil {
+			return nil, nil, err
+		}
+
+		if i > maxPageNr {
+			maxPageNr = i
+		}
+
+		m, err := ExtractPageImages(c, ctx, i, true)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(m) == 0 {
+			continue
+		}
+		for _, i := range m {
+			if err := contextutil.Check(c); err != nil {
+				return nil, nil, err
+			}
+			s := strconv.Itoa(i.ObjNr)
+			if len(s) > maxLenObjNr {
+				maxLenObjNr = len(s)
+			}
+			if len(i.Name) > maxLenID {
+				maxLenID = len(i.Name)
+			}
+			lenSize := len(types.ByteSize(i.Size).String())
+			if lenSize > maxLenSize {
+				maxLenSize = lenSize
+			}
+			if len(i.Filter) > maxLenFilters {
+				maxLenFilters = len(i.Filter)
+			}
+		}
+		mm = append(mm, m)
+	}
+
+	maxLenPageNr = len(strconv.Itoa(maxPageNr))
+
+	maxLen := &ImageListMaxLengths{PageNr: maxLenPageNr, ObjNr: maxLenObjNr, ID: maxLenID, Size: maxLenSize, Filters: maxLenFilters}
+
+	return mm, maxLen, contextutil.Check(c)
+}
+
+func prepHorSep(horSep *[]int, maxLen *ImageListMaxLengths) string {
+	s := "Page "
+	if maxLen.PageNr > 4 {
+		s += strings.Repeat(" ", maxLen.PageNr-4)
+		*horSep = append(*horSep, 5+maxLen.PageNr-4)
+	} else {
+		*horSep = append(*horSep, 5)
+	}
+
+	s += draw.VBar + " Obj# "
+	if maxLen.ObjNr > 4 {
+		s += strings.Repeat(" ", maxLen.ObjNr-4)
+		*horSep = append(*horSep, 6+maxLen.ObjNr-4)
+	} else {
+		*horSep = append(*horSep, 6)
+	}
+
+	s += draw.VBar + " Id "
+	if maxLen.ID > 2 {
+		s += strings.Repeat(" ", maxLen.ID-2)
+		*horSep = append(*horSep, 4+maxLen.ID-2)
+	} else {
+		*horSep = append(*horSep, 4)
+	}
+
+	s += draw.VBar + " Type  SoftMask ImgMask "
+	*horSep = append(*horSep, 24)
+
+	s += draw.VBar + " Width " + draw.VBar + " Height " + draw.VBar + " ColorSpace Comp bpc Interp "
+	*horSep = append(*horSep, 7, 8, 28)
+
+	s += draw.VBar + " "
+	if maxLen.Size > 4 {
+		s += strings.Repeat(" ", maxLen.Size-4)
+		*horSep = append(*horSep, 6+maxLen.Size-4)
+	} else {
+		*horSep = append(*horSep, 6)
+	}
+	s += "Size " + draw.VBar + " Filters"
+	if maxLen.Filters > 7 {
+		*horSep = append(*horSep, 8+maxLen.Filters-7)
+	} else {
+		*horSep = append(*horSep, 8)
+	}
+
+	return s
+}
+
+func sortedObjNrs(ii map[int]model.Image) []int {
+	objNrs := []int{}
+	for k := range ii {
+		objNrs = append(objNrs, k)
+	}
+	sort.Ints(objNrs)
+	return objNrs
+}
+
+func attrs(img model.Image) (string, string, string, string, string) {
+	t := "image"
+	if img.IsImgMask {
+		t = "imask"
+	}
+	if img.Thumb {
+		t = "thumb"
+	}
+
+	sm := " "
+	if img.HasSMask {
+		sm = "*"
+	}
+
+	im := " "
+	if img.HasImgMask {
+		im = "*"
+	}
+
+	bpc := "-"
+	if img.Bpc > 0 {
+		bpc = strconv.Itoa(img.Bpc)
+	}
+
+	interp := " "
+	if img.Interpol {
+		interp = "*"
+	}
+
+	return t, sm, im, bpc, interp
+}
+
+func listImages(c context.Context, mm []map[int]model.Image, maxLen *ImageListMaxLengths) ([]string, int, int64, error) {
+	ss := []string{}
+	first := true
+	j, size := 0, int64(0)
+	m := map[int]bool{}
+	horSep := []int{}
+	for _, ii := range mm {
+		if err := contextutil.Check(c); err != nil {
+			return nil, 0, 0, err
+		}
+		if first {
+			s := prepHorSep(&horSep, maxLen)
+			ss = append(ss, s)
+			first = false
+		}
+		ss = append(ss, draw.HorSepLine(horSep))
+
+		newPage := true
+
+		for _, objNr := range sortedObjNrs(ii) {
+			if err := contextutil.Check(c); err != nil {
+				return nil, 0, 0, err
+			}
+			img := ii[objNr]
+			pageNr := strconv.Itoa(img.PageNr)
+			if !newPage {
+				pageNr = strings.Repeat(" ", len(pageNr))
+			} else {
+				newPage = false
+			}
+
+			t, sm, im, bpc, interp := attrs(img)
+
+			s := strconv.Itoa(img.PageNr)
+			fill0 := strings.Repeat(" ", maxLen.PageNr-len(s))
+			if maxLen.PageNr < 4 {
+				fill0 += strings.Repeat(" ", 4-maxLen.PageNr)
+			}
+
+			s = strconv.Itoa(img.ObjNr)
+			fill1 := strings.Repeat(" ", maxLen.ObjNr-len(s))
+			if maxLen.ObjNr < 4 {
+				fill1 += strings.Repeat(" ", 4-maxLen.ObjNr)
+			}
+
+			fill2 := strings.Repeat(" ", maxLen.ID-len(img.Name))
+			if maxLen.ID < 2 {
+				fill2 += strings.Repeat(" ", 2-maxLen.ID-len(img.Name))
+			}
+
+			sizeStr := types.ByteSize(img.Size).String()
+			fill3 := strings.Repeat(" ", maxLen.Size-len(sizeStr))
+			if maxLen.Size < 4 {
+				fill3 = strings.Repeat(" ", 4-maxLen.Size)
+			}
+
+			ss = append(ss, fmt.Sprintf("%s%s %s %s%s %s %s%s %s %s    %s        %s    %s %5d %s  %5d %s %10s    %d   %s    %s   %s %s%s %s %s",
+				fill0, pageNr, draw.VBar,
+				fill1, strconv.Itoa(img.ObjNr), draw.VBar,
+				fill2, img.Name, draw.VBar,
+				t, sm, im, draw.VBar,
+				img.Width, draw.VBar,
+				img.Height, draw.VBar,
+				img.Cs, img.Comp, bpc, interp, draw.VBar,
+				fill3, sizeStr, draw.VBar, img.Filter))
+
+			if !m[img.ObjNr] {
+				m[img.ObjNr] = true
+				j++
+				size += img.Size
+			}
+		}
+	}
+	return ss, j, size, contextutil.Check(c)
+}
+
+// ImageListMaxLengths contains the column widths for a formatted image list.
+type ImageListMaxLengths struct {
+	PageNr, ObjNr, ID, Size, Filters int
+}
+
+// ListImages returns a formatted list of embedded images and supports cancellation.
+func ListImages(c context.Context, ctx *model.Context, selectedPages types.IntSet) ([]string, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
+	mm, maxLen, err := Images(c, ctx, selectedPages)
+	if err != nil {
+		return nil, err
+	}
+
+	ss, j, size, err := listImages(c, mm, maxLen)
+	if err != nil {
+		return nil, err
+	}
+
+	s := fmt.Sprintf("%d images available", j)
+
+	if j > 0 {
+		s += fmt.Sprintf(" (%s)", types.ByteSize(size))
+	}
+
+	return append([]string{s}, ss...), contextutil.Check(c)
+}
+
+func integerEntryValue(xRefTable *model.XRefTable, d types.Dict, key, context string, required bool) (*int, error) {
+	i, _, err := xRefTable.DereferenceIntegerEntry(d, key)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", context, err)
+	}
+	if i == nil {
+		if required {
+			return nil, fmt.Errorf("%s: missing entry=%s", context, key)
+		}
+		return nil, nil
+	}
+
+	v := i.Value()
+	return &v, nil
+}
+
+func resolvedCCITTDecodeParms(xRefTable *model.XRefTable, sd *types.StreamDict, parms types.Dict, context string) (types.Dict, error) {
+	resolved := types.NewDict()
+	if parms != nil {
+		resolved = parms.Clone().(types.Dict)
+	}
+
+	var rows *int
+	for _, key := range []string{"K", "Columns", "Rows"} {
+		v, err := integerEntryValue(xRefTable, parms, key, context+" decode parameters", false)
+		if err != nil {
+			return nil, err
+		}
+		if v != nil {
+			resolved[key] = types.Integer(*v)
+		}
+		if key == "Rows" {
+			rows = v
+		}
+	}
+
+	if rows == nil {
+		height, err := integerEntryValue(xRefTable, sd.Dict, "Height", context, true)
+		if err != nil {
+			return nil, err
+		}
+		resolved["Rows"] = types.Integer(*height)
+	}
+
+	return resolved, nil
+}
+
+func prepareImageDecode(xRefTable *model.XRefTable, sd *types.StreamDict, context string) error {
+	for i := range sd.FilterPipeline {
+		if sd.FilterPipeline[i].Name != filter.CCITTFax {
+			continue
+		}
+
+		parms, err := resolvedCCITTDecodeParms(xRefTable, sd, sd.FilterPipeline[i].DecodeParms, context)
+		if err != nil {
+			return err
+		}
+		sd.FilterPipeline[i].DecodeParms = parms
+	}
+
+	return nil
+}
+
+func imageDecodeLimit(xRefTable *model.XRefTable) int64 {
+	if xRefTable == nil || xRefTable.Conf == nil {
+		return model.DefaultResourceLimits().MaxDecodeBytes
+	}
+	return xRefTable.Conf.Limits.MaxDecodeBytes
+}
+
+func validateImageDimensions(ctx *model.Context, objNr, w, h int) error {
+	imgObj := ctx.Optimize.ImageObjects[objNr]
+	if imgObj == nil {
+		return fmt.Errorf("image obj#%d: missing optimization entry", objNr)
+	}
+	d := imgObj.ImageDict
+	if d == nil {
+		return fmt.Errorf("image obj#%d: missing image dictionary", objNr)
+	}
+	context := fmt.Sprintf("image obj#%d", objNr)
+	width, err := integerEntryValue(ctx.XRefTable, d.Dict, "Width", context, false)
+	if err != nil {
+		return err
+	}
+	height, err := integerEntryValue(ctx.XRefTable, d.Dict, "Height", context, false)
+	if err != nil {
+		return err
+	}
+	if width == nil || height == nil {
+		return fmt.Errorf("image obj#%d: missing width or height", objNr)
+	}
+	if *width != w || *height != h {
+		return fmt.Errorf("image obj#%d: replacement dimensions %dx%d, want %dx%d", objNr, w, h, *width, *height)
+	}
+	return nil
+}
+
+// UpdateImagesByObjNr replaces an XObject and supports cancellation.
+func UpdateImagesByObjNr(c context.Context, ctx *model.Context, rd io.Reader, objNr int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	sd, w, h, err := model.CreateImageStreamDict(ctx.XRefTable, contextReader{ctx: c, r: rd})
+	if err != nil {
+		return fmt.Errorf("image obj#%d: create replacement: %w", objNr, err)
+	}
+	if err := validateImageDimensions(ctx, objNr, w, h); err != nil {
+		return err
+	}
+	genNr := 0
+	entry, ok := ctx.FindTableEntry(objNr, genNr)
+	if !ok || entry == nil {
+		return fmt.Errorf("image obj#%d: missing xref entry", objNr)
+	}
+	entry.Object = *sd
+	return contextutil.Check(c)
+}
+
+func imageResourceRef(d types.Dict, id, context string) (*types.IndirectRef, error) {
+	o, found := d.Find(id)
+	if !found {
+		return nil, nil
+	}
+	ir, ok := o.(types.IndirectRef)
+	if !ok {
+		return nil, fmt.Errorf("%s: expected indirect reference, got %T", context, o)
+	}
+	return &ir, nil
+}
+
+func inheritedImageResourceRef(ctx *model.Context, resources types.Dict, pageNr int, id string) (*types.IndirectRef, error) {
+	if resources == nil {
+		return nil, nil
+	}
+	o, found := resources.Find("XObject")
+	if !found {
+		return nil, nil
+	}
+	d, err := ctx.DereferenceDict(o)
+	if err != nil {
+		return nil, fmt.Errorf("page %d resource %s: dereference inherited XObject dictionary: %w", pageNr, id, err)
+	}
+	if d == nil {
+		return nil, nil
+	}
+	return imageResourceRef(d, id, fmt.Sprintf("page %d resource %s", pageNr, id))
+}
+
+func unknownImageResource(pageNr int, id string) error {
+	return fmt.Errorf("page %d resource %s: unknown image resource", pageNr, id)
+}
+
+func requiredInheritedImageResourceRef(ctx *model.Context, resources types.Dict, pageNr int, id string) (*types.IndirectRef, error) {
+	ref, err := inheritedImageResourceRef(ctx, resources, pageNr, id)
+	if err != nil {
+		return nil, err
+	}
+	if ref == nil {
+		return nil, unknownImageResource(pageNr, id)
+	}
+	return ref, nil
+}
+
+func pageImageResource(ctx *model.Context, pageDict types.Dict, inheritedResources types.Dict, pageNr int, id string) (types.Dict, *types.IndirectRef, error) {
+	o, found := pageDict.Find("Resources")
+	if !found {
+		inheritedRef, err := requiredInheritedImageResourceRef(ctx, inheritedResources, pageNr, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		xObjects := types.NewDict()
+		pageDict["Resources"] = types.Dict{"XObject": xObjects}
+		return xObjects, inheritedRef, nil
+	}
+	resources, err := ctx.DereferenceDict(o)
+	if err != nil {
+		return nil, nil, fmt.Errorf("page %d resource %s: dereference resources dictionary: %w", pageNr, id, err)
+	}
+	if resources == nil {
+		return nil, nil, fmt.Errorf("page %d resource %s: missing resources dictionary", pageNr, id)
+	}
+	o, found = resources.Find("XObject")
+	if !found {
+		inheritedRef, err := requiredInheritedImageResourceRef(ctx, inheritedResources, pageNr, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		xObjects := types.NewDict()
+		resources["XObject"] = xObjects
+		return xObjects, inheritedRef, nil
+	}
+	xObjects, err := ctx.DereferenceDict(o)
+	if err != nil {
+		return nil, nil, fmt.Errorf("page %d resource %s: dereference XObject dictionary: %w", pageNr, id, err)
+	}
+	if xObjects == nil {
+		if ir, ok := o.(types.IndirectRef); ok {
+			return nil, nil, fmt.Errorf(
+				"page %d resource %s: missing XObject dictionary for obj#%d",
+				pageNr,
+				id,
+				ir.ObjectNumber.Value(),
+			)
+		}
+		return nil, nil, fmt.Errorf("page %d resource %s: missing XObject dictionary", pageNr, id)
+	}
+	ref, err := imageResourceRef(xObjects, id, fmt.Sprintf("page %d resource %s", pageNr, id))
+	if err != nil {
+		return nil, nil, err
+	}
+	if ref == nil {
+		ref, err = requiredInheritedImageResourceRef(ctx, inheritedResources, pageNr, id)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return xObjects, ref, nil
+}
+
+// UpdateImagesByPageNrAndId replaces the XObject referenced by pageNr and id and supports cancellation.
+func UpdateImagesByPageNrAndId(c context.Context, ctx *model.Context, rd io.Reader, pageNr int, id string) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	d, _, inhPAttrs, err := ctx.PageDict(c, pageNr, false)
+	if err != nil {
+		return fmt.Errorf("page %d resource %s: resolve page dictionary: %w", pageNr, id, err)
+	}
+	xObjects, targetRef, err := pageImageResource(ctx, d, inhPAttrs.Resources, pageNr, id)
+	if err != nil {
+		return err
+	}
+	imgIndRef, w, h, err := model.CreateImageResource(ctx.XRefTable, contextReader{ctx: c, r: rd})
+	if err != nil {
+		return fmt.Errorf("page %d resource %s: create replacement: %w", pageNr, id, err)
+	}
+	if err := validateImageDimensions(ctx, targetRef.ObjectNumber.Value(), w, h); err != nil {
+		return fmt.Errorf("page %d resource %s: %w", pageNr, id, err)
+	}
+	xObjects[id] = *imgIndRef
+	return contextutil.Check(c)
+}

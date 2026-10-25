@@ -1,0 +1,75 @@
+/*
+Copyright 2018 The pdfcpu Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package filter
+
+import (
+	"bytes"
+	"encoding/ascii85"
+	"errors"
+	"io"
+)
+
+type ascii85Decode struct {
+	baseFilter
+}
+
+const eodASCII85 = "~>"
+
+// Encode implements encoding for an ASCII85Decode filter.
+func (f ascii85Decode) Encode(r io.Reader) (io.Reader, error) {
+
+	b2 := &bytes.Buffer{}
+	encoder := ascii85.NewEncoder(b2)
+	if _, err := io.Copy(encoder, r); err != nil {
+		return nil, err
+	}
+	encoder.Close()
+
+	// Add eod sequence
+	b2.WriteString(eodASCII85)
+
+	return b2, nil
+}
+
+// Decode implements decoding for an ASCII85Decode filter.
+func (f ascii85Decode) Decode(r io.Reader) (io.Reader, error) {
+	return f.DecodeLength(r, -1)
+}
+
+// DecodeLength implements decoding for an ASCII85Decode filter with a maximum output length.
+func (f ascii85Decode) DecodeLength(r io.Reader, maxLen int64) (io.Reader, error) {
+	bb, err := getReaderBytes(r)
+	if err != nil {
+		return nil, err
+	}
+
+	i := bytes.Index(bb, []byte(eodASCII85))
+	if i < 0 {
+		return nil, errors.New("ASCII85 decode: missing eod marker")
+	}
+
+	bb = bb[:i]
+
+	decoder := ascii85.NewDecoder(bytes.NewReader(bb))
+
+	b2, err := f.copyDecoded(decoder, maxLen)
+	if err != nil {
+		return nil, err
+	}
+
+	return b2, nil
+}

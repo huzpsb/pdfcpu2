@@ -1,0 +1,75 @@
+/*
+Copyright 2024 The pdfcpu Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package model
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/pdfcpu/pdfcpu/pkg/log"
+)
+
+// ShowMsg logs msg.
+func ShowMsg(msg string) {
+	s := "pdfcpu " + msg
+	if log.DebugEnabled() {
+		log.Debug.Println(s)
+	}
+	if log.ReadEnabled() {
+		log.Read.Println(s)
+	}
+	if log.ValidateEnabled() {
+		log.Validate.Println(s)
+	}
+	if log.CLIEnabled() {
+		log.CLI.Println(s)
+	}
+}
+
+// ShowMsgTopic shows msg topic.
+func ShowMsgTopic(topic, msg string) {
+	msg = topic + ": " + msg
+	ShowMsg(msg)
+}
+
+// ShowRepaired shows repaired.
+func ShowRepaired(msg string) {
+	ShowMsgTopic("repaired", msg)
+}
+
+// ShowSkipped shows skipped.
+func ShowSkipped(msg string) {
+	ShowMsgTopic("skipped", msg)
+}
+
+// ShowDigestedSpecViolation shows digested spec violation.
+func ShowDigestedSpecViolation(msg string) {
+	ShowMsgTopic("digested", msg)
+}
+
+func digestedSpecViolationMessage(err error) string {
+	var validationErr *ValidationError
+	if errors.As(err, &validationErr) {
+		return fmt.Sprintf("spec violation (obj#:%d): %v", validationErr.ObjectNumber(), err)
+	}
+	return fmt.Sprintf("spec violation: %v", err)
+}
+
+// ShowDigestedSpecViolationError shows digested spec violation error.
+func ShowDigestedSpecViolationError(err error) {
+	ShowMsgTopic("digested", digestedSpecViolationMessage(err))
+}

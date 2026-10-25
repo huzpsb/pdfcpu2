@@ -1,0 +1,764 @@
+/*
+Copyright 2018 The pdfcpu Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package pdfcpu
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/pdfcpu/pdfcpu/pkg/filter"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+)
+
+var inDir, outDir string
+var xRefTable *model.XRefTable
+
+// TestMain verifies main.
+func TestMain(m *testing.M) {
+	inDir = filepath.Join("..", "testdata", "resources")
+
+	var err error
+
+	xRefTable, err = CreateXRefTableWithRootDict()
+	if err != nil {
+		os.Exit(1)
+	}
+
+	outDir, err = os.MkdirTemp("", "pdfcpu_imageTests")
+	if err != nil {
+		os.Exit(1)
+	}
+
+	exitCode := m.Run()
+
+	os.Exit(exitCode)
+}
+
+func TestRenderImagePreservesJBIG2Stream(t *testing.T) {
+	content := []byte{0x97, 0x4a, 0x42, 0x32}
+	sd := &types.StreamDict{
+		Dict:           types.NewDict(),
+		Content:        content,
+		FilterPipeline: []types.PDFFilter{{Name: filter.JBIG2}},
+	}
+
+	r, ext, err := RenderImage(nil, sd, false, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ext != "jbig2" {
+		t.Fatalf("got extension %q, want jbig2", ext)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf.Bytes(), content) {
+		t.Fatalf("got %x, want %x", buf.Bytes(), content)
+	}
+}
+
+func TestColorSpaceStringRejectsMalformedArray(t *testing.T) {
+	ctx := &model.Context{XRefTable: xRefTable}
+	tests := []struct {
+		name string
+		cs   types.Array
+		want string
+	}{
+		{
+			name: "empty array",
+			want: "empty array",
+		},
+		{
+			name: "first entry is not a name",
+			cs:   types.Array{types.Integer(1)},
+			want: "expected name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sd := &types.StreamDict{Dict: types.Dict{"ColorSpace": tt.cs}}
+			_, err := ColorSpaceString(ctx, sd)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q, got %q", tt.want, err.Error())
+			}
+		})
+	}
+}
+
+func TestColorSpaceComponentsRejectsMalformedArray(t *testing.T) {
+	tests := []struct {
+		name string
+		cs   types.Array
+		want string
+	}{
+		{
+			name: "empty array",
+			want: "empty array",
+		},
+		{
+			name: "first entry is not a name",
+			cs:   types.Array{types.Integer(1)},
+			want: "expected name",
+		},
+		{
+			name: "DeviceN missing colorants",
+			cs:   types.Array{types.Name(model.DeviceNCS)},
+			want: "missing array entry 1",
+		},
+		{
+			name: "DeviceN colorants not array",
+			cs:   types.Array{types.Name(model.DeviceNCS), types.Name("Cyan")},
+			want: "DeviceN colorants",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sd := &types.StreamDict{Dict: types.Dict{"ColorSpace": tt.cs}}
+			_, err := ColorSpaceComponents(xRefTable, sd)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q, got %q", tt.want, err.Error())
+			}
+		})
+	}
+}
+
+func TestCreateImageStreamDictPreservesIndexedPNG(t *testing.T) {
+	palette := color.Palette{
+		color.RGBA{R: 0x00, G: 0x00, B: 0x00, A: 0xFF},
+		color.RGBA{R: 0x80, G: 0x20, B: 0x40, A: 0xFF},
+		color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF},
+	}
+	img := image.NewPaletted(image.Rect(0, 0, 3, 2), palette)
+	img.Pix = []uint8{0, 1, 2, 2, 1, 0}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+
+	sd, w, h, err := model.CreateImageStreamDict(xRefTable, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w != 3 || h != 2 {
+		t.Fatalf("got dimensions %dx%d, want 3x2", w, h)
+	}
+	if !bytes.Equal(sd.Content, img.Pix) {
+		t.Fatalf("got image bytes %x, want %x", sd.Content, img.Pix)
+	}
+
+	assertIndexedColorSpace(t, sd, 2, []byte{0x00, 0x00, 0x00, 0x80, 0x20, 0x40, 0xFF, 0xFF, 0xFF})
+}
+
+func TestCreateImageStreamDictPreservesGrayIndexedPNG(t *testing.T) {
+	palette := color.Palette{
+		color.Gray{Y: 0x00},
+		color.Gray{Y: 0x80},
+		color.Gray{Y: 0xFF},
+	}
+	img := image.NewPaletted(image.Rect(0, 0, 3, 2), palette)
+	img.Pix = []uint8{0, 1, 2, 2, 1, 0}
+
+	sd := streamDictForPalettedPNG(t, img)
+	if !bytes.Equal(sd.Content, img.Pix) {
+		t.Fatalf("got image bytes %x, want %x", sd.Content, img.Pix)
+	}
+
+	assertIndexedColorSpace(t, sd, 2, []byte{0x00, 0x00, 0x00, 0x80, 0x80, 0x80, 0xFF, 0xFF, 0xFF})
+	if o := sd.IndirectRefEntry("SMask"); o != nil {
+		t.Fatalf("unexpected SMask: %s", o)
+	}
+}
+
+func TestCreateImageStreamDictPreservesTransparentIndexedPNG(t *testing.T) {
+	palette := color.Palette{
+		color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0xFF},
+		color.NRGBA{R: 0x40, G: 0x80, B: 0xC0, A: 0x7F},
+		color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0x00},
+	}
+	img := image.NewPaletted(image.Rect(0, 0, 3, 2), palette)
+	img.Pix = []uint8{0, 1, 2, 2, 1, 0}
+
+	sd := streamDictForPalettedPNG(t, img)
+	if !bytes.Equal(sd.Content, img.Pix) {
+		t.Fatalf("got image bytes %x, want %x", sd.Content, img.Pix)
+	}
+
+	assertIndexedColorSpace(t, sd, 2, []byte{0x00, 0x00, 0x00, 0x40, 0x80, 0xC0, 0xFF, 0xFF, 0xFF})
+	assertSoftMask(t, sd, []byte{0xFF, 0x7F, 0x00, 0x00, 0x7F, 0xFF})
+}
+
+func TestCreateImageStreamDictPreservesNRGBAGraySamples(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 3, 1))
+	img.SetNRGBA(0, 0, color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF})
+	img.SetNRGBA(1, 0, color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0x80})
+	img.SetNRGBA(2, 0, color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0x00})
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+
+	sd, w, h, err := model.CreateImageStreamDict(xRefTable, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w != 3 || h != 1 {
+		t.Fatalf("got dimensions %dx%d, want 3x1", w, h)
+	}
+	if cs := sd.NameEntry("ColorSpace"); cs == nil || *cs != model.DeviceGrayCS {
+		t.Fatalf("got ColorSpace %v, want %s", cs, model.DeviceGrayCS)
+	}
+	if bpc := sd.IntEntry("BitsPerComponent"); bpc == nil || *bpc != 8 {
+		t.Fatalf("got BitsPerComponent %v, want 8", bpc)
+	}
+	if want := []byte{0xFF, 0xFF, 0xFF}; !bytes.Equal(sd.Content, want) {
+		t.Fatalf("got image bytes %x, want %x", sd.Content, want)
+	}
+	assertSoftMask(t, sd, []byte{0xFF, 0x80, 0x00})
+}
+
+func TestCreateImageStreamDictPreservesNRGBA64GraySamples(t *testing.T) {
+	img := image.NewNRGBA64(image.Rect(0, 0, 3, 1))
+	img.SetNRGBA64(0, 0, color.NRGBA64{R: 0xFFFF, G: 0xFFFF, B: 0xFFFF, A: 0xFFFF})
+	img.SetNRGBA64(1, 0, color.NRGBA64{R: 0xFFFF, G: 0xFFFF, B: 0xFFFF, A: 0x8001})
+	img.SetNRGBA64(2, 0, color.NRGBA64{R: 0xFFFF, G: 0xFFFF, B: 0xFFFF, A: 0x0000})
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+
+	sd, w, h, err := model.CreateImageStreamDict(xRefTable, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w != 3 || h != 1 {
+		t.Fatalf("got dimensions %dx%d, want 3x1", w, h)
+	}
+	if cs := sd.NameEntry("ColorSpace"); cs == nil || *cs != model.DeviceGrayCS {
+		t.Fatalf("got ColorSpace %v, want %s", cs, model.DeviceGrayCS)
+	}
+	if bpc := sd.IntEntry("BitsPerComponent"); bpc == nil || *bpc != 16 {
+		t.Fatalf("got BitsPerComponent %v, want 16", bpc)
+	}
+	if want := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; !bytes.Equal(sd.Content, want) {
+		t.Fatalf("got image bytes %x, want %x", sd.Content, want)
+	}
+	assertSoftMask(t, sd, []byte{0xFF, 0xFF, 0x80, 0x01, 0x00, 0x00})
+}
+
+func streamDictForPalettedPNG(t *testing.T, img *image.Paletted) *types.StreamDict {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+
+	sd, w, h, err := model.CreateImageStreamDict(xRefTable, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	if w != b.Dx() || h != b.Dy() {
+		t.Fatalf("got dimensions %dx%d, want %dx%d", w, h, b.Dx(), b.Dy())
+	}
+	return sd
+}
+
+func assertIndexedColorSpace(t *testing.T, sd *types.StreamDict, hiVal int, wantLookup []byte) {
+	t.Helper()
+
+	cs, ok := sd.Find("ColorSpace")
+	if !ok {
+		t.Fatal("missing ColorSpace")
+	}
+	a, ok := cs.(types.Array)
+	if !ok {
+		t.Fatalf("ColorSpace is %T, want Indexed array", cs)
+	}
+	if a[0] != types.Name(model.IndexedCS) || a[1] != types.Name(model.DeviceRGBCS) || a[2] != types.Integer(hiVal) {
+		t.Fatalf("unexpected ColorSpace array prefix: %v", a[:3])
+	}
+
+	lookup, ok := a[3].(types.HexLiteral)
+	if !ok {
+		t.Fatalf("lookup is %T, want HexLiteral", a[3])
+	}
+	bb, err := lookup.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(bb, wantLookup) {
+		t.Fatalf("got lookup %x, want %x", bb, wantLookup)
+	}
+}
+
+func assertSoftMask(t *testing.T, sd *types.StreamDict, want []byte) {
+	t.Helper()
+
+	ir := sd.IndirectRefEntry("SMask")
+	if ir == nil {
+		t.Fatal("missing SMask")
+	}
+	sm, _, err := xRefTable.DereferenceStreamDict(*ir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.Decode(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sm.Content, want) {
+		t.Fatalf("got SMask %x, want %x", sm.Content, want)
+	}
+}
+
+func streamDictForJPGFile(xRefTable *model.XRefTable, fileName string) (*types.StreamDict, error) {
+	bb, err := os.ReadFile(fileName)
+	if err != nil {
+		return nil, err
+	}
+
+	c, _, err := image.DecodeConfig(bytes.NewReader(bb))
+	if err != nil {
+		return nil, err
+	}
+
+	var cs string
+
+	switch c.ColorModel {
+
+	case color.GrayModel:
+		cs = model.DeviceGrayCS
+
+	case color.YCbCrModel:
+		cs = model.DeviceRGBCS
+
+	case color.CMYKModel:
+		cs = model.DeviceCMYKCS
+
+	default:
+		return nil, errors.New("unexpected color model for JPEG")
+
+	}
+
+	sd, err := model.CreateDCTImageStreamDict(xRefTable, bb, c.Width, c.Height, 8, cs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure decoded image stream.
+	if err := sd.Decode(); err != nil {
+		return nil, err
+	}
+
+	return sd, nil
+}
+
+func streamDictForImageFile(xRefTable *model.XRefTable, fileName string) (*types.StreamDict, error) {
+	f, err := os.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	sd, _, _, err := model.CreateImageStreamDict(xRefTable, f)
+	return sd, err
+}
+
+func compare(t *testing.T, fn1, fn2 string) {
+	f1, err := os.Open(fn1)
+	if err != nil {
+		t.Errorf("%s: %v", fn1, err)
+		return
+	}
+	defer f1.Close()
+
+	bb1, err := io.ReadAll(f1)
+	if err != nil {
+		t.Errorf("%s: %v", fn1, err)
+		return
+	}
+
+	f2, err := os.Open(fn2)
+	if err != nil {
+		t.Errorf("%s: %v", fn2, err)
+		return
+	}
+	defer f1.Close()
+
+	bb2, err := io.ReadAll(f2)
+	if err != nil {
+		t.Errorf("%s: %v", fn2, err)
+		return
+	}
+
+	if len(bb1) != len(bb2) {
+		t.Errorf("%s <-> %s: length mismatch %d != %d", fn1, fn2, len(bb1), len(bb2))
+		return
+	}
+
+	for i := range bb1 {
+		if bb1[i] != bb2[i] {
+			t.Errorf("%s <-> %s: mismatch at %d, 0x%02x != 0x%02x\n", fn1, fn2, i, bb1[i], bb2[i])
+			return
+		}
+	}
+
+}
+
+func printOptionalSMask(t *testing.T, sd *types.StreamDict) {
+	o := sd.IndirectRefEntry("SMask")
+	if o != nil {
+		sm, err := xRefTable.Dereference(*o)
+		if err != nil {
+			t.Fatalf("err: %v\n", err)
+		}
+		fmt.Printf("SMask %s: %s\n", o, sm)
+	}
+}
+
+// TestReadWriteImages verifies read write images.
+func TestReadWriteImages(t *testing.T) {
+	for _, filename := range []string{
+		"mountain.jpg",
+		"mountain.webp",
+		"mountain.png",
+	} {
+
+		// Read a PNG file and create an image object which is a stream dict.
+		sd, err := streamDictForImageFile(xRefTable, filepath.Join(inDir, filename))
+		if err != nil {
+			t.Fatalf("err: %v\n", err)
+		}
+
+		// Print the image object.
+		fmt.Printf("created imageObj: %s\n", sd)
+
+		// Print the optional SMask.
+		printOptionalSMask(t, sd)
+
+		// The file type and its extension gets decided during the call to WriteImage!
+		// These testcases all produce PNG files.
+		fnNoExt := strings.TrimSuffix(filename, filepath.Ext(filename))
+		tmpFileName1 := filepath.Join(outDir, fnNoExt)
+		fmt.Printf("tmpFileName: %s\n", tmpFileName1)
+
+		// Write the image object (as PNG file) to disk.
+		// fn1 is the resulting fileName path including the suffix (aka filetype extension).
+		fn1, err := WriteImage(xRefTable, tmpFileName1, sd, false, 0)
+		if err != nil {
+			t.Fatalf("err: %v\n", err)
+		}
+
+		// Since image/png does not write all ancillary chunks (eg. pHYs for dpi)
+		// we can only compare against a PNG file which resulted from using image/png.
+
+		// Read in a PNG file created by pdfcpu and create an image object.
+		sd, err = streamDictForImageFile(xRefTable, fn1)
+		if err != nil {
+			t.Fatalf("err: %v\n", err)
+		}
+
+		// Write the image object (as PNG file) to disk.s
+		fn2, err := WriteImage(xRefTable, tmpFileName1+"2", sd, false, 0)
+		if err != nil {
+			t.Fatalf("err: %v\n", err)
+		}
+
+		// ..and compare each other.
+		compare(t, fn1, fn2)
+	}
+
+}
+
+// Read in a device gray image stream dump from disk.
+func read1BPCDeviceGrayFlateStreamDump(fileName string) (*types.StreamDict, error) {
+	f, err := os.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// Read in a flate encoded stream.
+	buf, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	sd := &types.StreamDict{
+		Dict: types.Dict(
+			map[string]types.Object{
+				"Type":             types.Name("XObject"),
+				"Subtype":          types.Name("Image"),
+				"Width":            types.Integer(1161),
+				"Height":           types.Integer(392),
+				"BitsPerComponent": types.Integer(1),
+				"ColorSpace":       types.Name(model.DeviceGrayCS),
+				"Decode":           types.NewNumberArray(1, 0),
+			},
+		),
+		Raw:            buf,
+		FilterPipeline: []types.PDFFilter{{Name: filter.Flate, DecodeParms: nil}}}
+
+	sd.InsertName("Filter", filter.Flate)
+
+	return sd, sd.Decode()
+}
+
+// TestReadDeviceGrayWritePNG out with a DeviceGray color space based image object, write a PNG file then read and write again.
+func TestReadDeviceGrayWritePNG(t *testing.T) {
+	// Create an image for a flate encoded stream dump file.
+	filename := "DeviceGray"
+	path := filepath.Join(inDir, filename+".raw")
+
+	sd, err := read1BPCDeviceGrayFlateStreamDump(path)
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	// Print the image object.
+	fmt.Printf("created imageObj: %s\n", sd)
+	o := sd.IndirectRefEntry("SMask")
+	if o != nil {
+		sm, err := xRefTable.Dereference(*o)
+		if err != nil {
+			t.Fatalf("err: %v\n", err)
+		}
+		fmt.Printf("SMask %s: %s\n", o, sm)
+	}
+
+	tmpFile1 := filepath.Join(outDir, filename)
+
+	// Write the image object as PNG file.
+	fn1, err := WriteImage(xRefTable, tmpFile1, sd, false, 0)
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	// Since image/png does not write all ancillary chunks (eg. pHYs for dpi)
+	// we can only compare against a PNG file which resulted from using image/png.
+
+	// Read in a PNG file created by pdfcpu and create an image object.
+	sd, err = streamDictForImageFile(xRefTable, fn1)
+	if err != nil || sd == nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	fmt.Printf("created another imageObj: %s\n", sd)
+
+	tmpFile2 := filepath.Join(outDir, filename+"2")
+
+	// Write the image object as PNG file.
+	fn2, err := WriteImage(xRefTable, tmpFile2, sd, false, 0)
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	// ..and compare each other.
+	compare(t, fn1, fn2)
+}
+
+// Read in a device CMYK image stream dump from disk.
+func read8BPCDeviceCMYKFlateStreamDump(fileName string) (*types.StreamDict, error) {
+	f, err := os.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	buf, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	decodeParms := types.Dict(
+		map[string]types.Object{
+			"BitsPerComponent": types.Integer(8),
+			"Colors":           types.Integer(4),
+			"Columns":          types.Integer(340),
+		},
+	)
+
+	sd := &types.StreamDict{
+		Dict: types.Dict(
+			map[string]types.Object{
+				"Type":             types.Name("XObject"),
+				"Subtype":          types.Name("Image"),
+				"Width":            types.Integer(340),
+				"Height":           types.Integer(216),
+				"BitsPerComponent": types.Integer(8),
+				"ColorSpace":       types.Name(model.DeviceCMYKCS),
+			},
+		),
+		Raw:            buf,
+		FilterPipeline: []types.PDFFilter{{Name: filter.Flate, DecodeParms: decodeParms}}}
+
+	sd.InsertName("Filter", filter.Flate)
+
+	sd.FilterPipeline[0].DecodeParms = decodeParms
+
+	return sd, sd.Decode()
+}
+
+// TestReadCMYKWriteTIFF out with a CMYK color space based image object, write a TIFF file then read and write again.
+func TestReadCMYKWriteTIFF(t *testing.T) {
+	filename := "DeviceCMYK"
+	path := filepath.Join(inDir, filename+".raw")
+
+	sd, err := read8BPCDeviceCMYKFlateStreamDump(path)
+	if err != nil {
+		t.Errorf("err: %v\n", err)
+	}
+
+	// Print the image object.
+	fmt.Printf("created imageObj: %s\n", sd)
+
+	// Print the optional SMask.
+	printOptionalSMask(t, sd)
+
+	// The file type and its extension gets decided during WriteImage.
+	// These testcases all produce TIFF files.
+	tmpFile1 := filepath.Join(outDir, filename)
+
+	// Write the image object as TIFF file.
+	fn1, err := WriteImage(xRefTable, tmpFile1, sd, false, 0)
+	if err != nil {
+		t.Errorf("err: %v\n", err)
+	}
+
+	// Read in a TIFF file created by pdfcpu and create an image object.
+	sd, err = streamDictForImageFile(xRefTable, fn1)
+	if err != nil || sd == nil {
+		t.Errorf("err: %v\n", err)
+	}
+
+	tmpFile2 := filepath.Join(outDir, filename+"2")
+
+	// Write the image object as TIFF file.
+	fn2, err := WriteImage(xRefTable, tmpFile2, sd, false, 0)
+	if err != nil {
+		t.Errorf("err: %v\n", err)
+	}
+
+	// ..and compare each other.
+	compare(t, fn1, fn2)
+
+}
+
+// TestReadTIFFWritePNG verifies read TIFF write PNG.
+func TestReadTIFFWritePNG(t *testing.T) {
+	// TIFF images get read into a Flate encoded image stream like PNGs.
+	// Any Flate encoded image stream gets written as PNG unless it operates in the Device CMYK color space.
+
+	fileName := "mountain.tif"
+
+	// Read a TIFF file and create an image object which is a stream dict.
+	sd, err := streamDictForImageFile(xRefTable, filepath.Join(inDir, fileName))
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	// Print the image object.
+	fmt.Printf("created imageObj: %s\n", sd)
+
+	// Print the optional SMask.
+	printOptionalSMask(t, sd)
+
+	// The file type and its extension gets decided during the call to WriteImage!
+	// These testcases all produce PNG files.
+	fnNoExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	tmpFileName1 := filepath.Join(outDir, fnNoExt)
+	fmt.Printf("tmpFileName: %s\n", tmpFileName1)
+
+	// Write the image object (as PNG file) to disk.
+	// fn1 is the resulting fileName path including the suffix (aka filetype extension).
+	fn1, err := WriteImage(xRefTable, tmpFileName1, sd, false, 0)
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	// Since image/png does not write all ancillary chunks (eg. pHYs for dpi)
+	// we can only compare against a PNG file which resulted from using image/png.
+
+	// Read in a PNG file created by pdfcpu and create an image object.
+	sd, err = streamDictForImageFile(xRefTable, fn1)
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	// Write the image object (as PNG file) to disk.
+	fn2, err := WriteImage(xRefTable, tmpFileName1+"2", sd, false, 0)
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	// ..and compare each other.
+	compare(t, fn1, fn2)
+}
+
+// TestReadWriteJPEG verifies read write JPEG.
+func TestReadWriteJPEG(t *testing.T) {
+	fileName := "mountain.jpg"
+
+	// Read a JPEG file and create a stream dict w/o decoding.
+	sd, err := streamDictForJPGFile(xRefTable, filepath.Join(inDir, fileName))
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+
+	// Print the image object.
+	fmt.Printf("created imageObj: %s\n", sd)
+
+	// Print the optional SMask.
+	printOptionalSMask(t, sd)
+
+	// The file type and its extension gets decided during the call to WriteImage!
+	// These testcases all produce PNG files.
+	fnNoExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	tmpFileName1 := filepath.Join(outDir, fnNoExt)
+	fmt.Printf("tmpFileName: %s\n", tmpFileName1)
+
+	// Write the image object (as .jpg file) to disk.
+	// fn is the resulting fileName path including the suffix (aka filetype extension).
+	fn, err := WriteImage(xRefTable, tmpFileName1, sd, false, 0)
+	if err != nil {
+		t.Fatalf("err: %v\n", err)
+	}
+	fmt.Printf("fileName: %s\n", fn)
+	// No comparison since JPG is lossy.
+}

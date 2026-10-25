@@ -1,0 +1,1381 @@
+/*
+Copyright 2023 The pdfcpu Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package form
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
+	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/primitives"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+)
+
+// DataFormat identifies a supported form data format.
+type DataFormat int
+
+// Supported form data formats.
+const (
+	CSV DataFormat = iota
+	JSON
+)
+
+func cacheResIDs(c context.Context, ctx *model.Context, pdf *primitives.PDF) error {
+	// Iterate over all pages of ctx and prepare a resIds []string for inherited "Font" and "XObject" resources.
+	for i := 1; i <= ctx.PageCount; i++ {
+		_, _, inhPA, err := ctx.PageDict(c, i, true)
+		if err != nil {
+			return fmt.Errorf("page %d: page dictionary: %w", i, err)
+		}
+		if inhPA != nil {
+			if err := cacheResourceDict(inhPA.Resources, "Font", i, pdf.FontResIDs); err != nil {
+				return err
+			}
+			if err := cacheResourceDict(inhPA.Resources, "XObject", i, pdf.XObjectResIDs); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func cacheResourceDict(resources types.Dict, name string, pageNr int, cache map[int]types.Dict) error {
+	o := resources[name]
+	if o == nil {
+		return nil
+	}
+	d, ok := o.(types.Dict)
+	if !ok {
+		return fmt.Errorf("page %d: %s resources: expected dictionary, got %T", pageNr, name, o)
+	}
+	cache[pageNr] = d
+	return nil
+}
+
+func addImages(c context.Context, ctx *model.Context, pages map[string]*Page) ([]*model.Page, error) {
+	pdf := &primitives.PDF{
+		FieldIDs:      types.StringSet{},
+		Fields:        types.Array{},
+		FormFonts:     map[string]*primitives.FormFont{},
+		Pages:         map[string]*primitives.PDFPage{},
+		FontResIDs:    map[int]types.Dict{},
+		XObjectResIDs: map[int]types.Dict{},
+		Conf:          ctx.Configuration,
+		XRefTable:     ctx.XRefTable,
+		Optimize:      ctx.Optimize,
+		CheckBoxAPs:   map[float64]*primitives.AP{},
+		RadioBtnAPs:   map[float64]*primitives.AP{},
+		OldFieldIDs:   types.StringSet{},
+		Debug:         false,
+		Offline:       ctx.Offline,
+		Timeout:       ctx.Timeout,
+	}
+
+	if err := cacheResIDs(c, ctx, pdf); err != nil {
+		return nil, fmt.Errorf("cache page resources: %w", err)
+	}
+
+	// What follows is a quirky way of turning a map of pages into a sorted slice of pages
+	// including entries for pages that are missing in the map.
+
+	var pageNrs []int
+
+	for pageNr := range pages {
+		nr, err := strconv.Atoi(pageNr)
+		if err != nil {
+			return nil, fmt.Errorf("page %q: parse page number: %w", pageNr, err)
+		}
+		pageNrs = append(pageNrs, nr)
+	}
+
+	sort.Ints(pageNrs)
+
+	pp := []*Page{}
+
+	maxPageNr := pageNrs[len(pageNrs)-1]
+	for i := 1; i <= maxPageNr; i++ {
+		pp = append(pp, pages[strconv.Itoa(i)])
+	}
+
+	mp := []*model.Page{}
+	imageMap := model.ImageMap{}
+
+	for i, page := range pp {
+
+		pageNr := i + 1
+
+		_, _, inhPAttrs, err := ctx.PageDict(c, pageNr, false)
+		if err != nil {
+			return nil, fmt.Errorf("page %d: page dictionary: %w", pageNr, err)
+		}
+
+		p := model.Page{
+			MediaBox:  inhPAttrs.MediaBox,
+			CropBox:   inhPAttrs.CropBox,
+			Fm:        model.FontMap{},
+			Im:        model.ImageMap{},
+			AnnotTabs: map[int]model.FieldAnnotation{},
+			Buf:       new(bytes.Buffer),
+		}
+
+		if page == nil {
+			if pageNr <= pdf.XRefTable.PageCount {
+				mp = append(mp, nil)
+				continue
+			}
+		}
+
+		for _, ib := range page.ImageBoxes {
+			if err := ib.RenderForFill(pdf, &p, pageNr, imageMap); err != nil {
+				return nil, fmt.Errorf("page %d: render image box: %w", pageNr, err)
+			}
+		}
+
+		mp = append(mp, &p)
+	}
+
+	return mp, nil
+}
+
+// CSVFieldAttributes represent the value(s) and the lock state for a field.
+type CSVFieldAttributes struct {
+	Values []string
+	Lock   bool
+}
+
+func parsePageNr(s string, ib *primitives.ImageBox) error {
+	_, err := strconv.Atoi(s)
+	if err != nil {
+		return err
+	}
+	ib.PageNr = s
+	return nil
+}
+
+func parseWidth(s string, ib *primitives.ImageBox) error {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return err
+	}
+	ib.Width = f
+	return nil
+}
+
+func parseHeight(s string, ib *primitives.ImageBox) error {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return err
+	}
+	ib.Height = f
+	return nil
+}
+
+func parsePositionAnchor(s string, ib *primitives.ImageBox) error {
+	d := strings.Split(s, " ")
+	if len(d) < 1 || len(d) > 2 {
+		return fmt.Errorf("illegal position string: need 1 or 2 values, %s", s)
+	}
+	if len(d) == 1 {
+		_, err := types.ParsePositionAnchor(s)
+		if err != nil {
+			return err
+		}
+		ib.Anchor = s
+		return nil
+	}
+	x, err := strconv.ParseFloat(d[0], 64)
+	if err != nil {
+		return err
+	}
+
+	y, err := strconv.ParseFloat(d[1], 64)
+	if err != nil {
+		return err
+	}
+	ib.Position = [2]float64{x, y}
+	return nil
+}
+
+func parsePositionOffset(s string, ib *primitives.ImageBox) error {
+	d := strings.Split(s, " ")
+	if len(d) != 2 {
+		return fmt.Errorf("illegal position offset string: need 2 numeric values, %s", s)
+	}
+
+	f, err := strconv.ParseFloat(d[0], 64)
+	if err != nil {
+		return err
+	}
+	ib.Dx = f
+
+	f, err = strconv.ParseFloat(d[1], 64)
+	if err != nil {
+		return err
+	}
+	ib.Dy = f
+
+	return nil
+}
+
+func parseImgBackgroundColor(s string, ib *primitives.ImageBox) error {
+	ib.BackgroundColor = s
+	return nil
+}
+
+func parseImgBorder(s string, ib *primitives.ImageBox) error {
+	var err error
+
+	b := strings.Split(s, " ")
+	if len(b) == 0 || len(b) > 5 {
+		return fmt.Errorf("borders: need between 1 and 5 components, %s", s)
+	}
+
+	ib.Border = &primitives.Border{}
+	border := ib.Border
+
+	border.Width, err = strconv.Atoi(b[0])
+	if err != nil {
+		return err
+	}
+	if border.Width == 0 {
+		return errors.New("borders: need width > 0")
+	}
+
+	if len(b) == 1 {
+		return nil
+	}
+
+	st := strings.ToLower(b[1])
+	if types.MemberOf(st, []string{"bevel", "miter", "round"}) {
+		border.Style = st
+		if len(b) > 2 {
+			border.Color = strings.Join(b[2:], " ")
+		}
+		return nil
+	}
+
+	border.Color = strings.Join(b[1:], " ")
+
+	return nil
+}
+
+type imageBoxParamMap map[string]func(string, *primitives.ImageBox) error
+
+var imgParamMap = imageBoxParamMap{
+	"bgcolor":  parseImgBackgroundColor,
+	"border":   parseImgBorder,
+	"offset":   parsePositionOffset,
+	"page":     parsePageNr,
+	"position": parsePositionAnchor,
+	"width":    parseWidth,
+	"height":   parseHeight,
+}
+
+func (m imageBoxParamMap) processImageBoxArg(paramPrefix, paramValueStr string, ib *primitives.ImageBox) error {
+	var param string
+
+	// Completion support
+	for k := range m {
+		if !strings.HasPrefix(k, paramPrefix) {
+			continue
+		}
+		if len(param) > 0 {
+			return fmt.Errorf("ambiguous parameter prefix \"%s\"", paramPrefix)
+		}
+		param = k
+	}
+
+	if param == "" {
+		return fmt.Errorf("unknown parameter prefix \"%s\"", paramPrefix)
+	}
+
+	return m[param](paramValueStr, ib)
+}
+
+func imageBox(s, src, url string) (*primitives.ImageBox, string, error) {
+	if !strings.HasPrefix(s, "@img") || len(s) < 6 {
+		return nil, "", fmt.Errorf("parsing CSV field names: missing @img: <%s>", s)
+	}
+
+	s = s[4:]
+	if s[0] != '(' || s[len(s)-1] != ')' {
+		return nil, "", fmt.Errorf("parsing CSV field names: invalid @img: <%s>", s)
+	}
+
+	s = s[1 : len(s)-1]
+	if len(s) == 0 {
+		return nil, "", fmt.Errorf("parsing CSV field names: empty @img: <%s>", s)
+	}
+
+	ib := primitives.ImageBox{Src: src, Dx: 0, Dy: 0, Width: 0, Height: 0}
+	if url != "" {
+		ib.Url = url
+	}
+	ss := strings.Split(s, ",")
+
+	for _, s := range ss {
+		ss1 := strings.SplitN(s, ":", 2)
+		if len(ss1) != 2 {
+			return nil, "", fmt.Errorf("parsing CSV field names: invalid @img: <%s>", s)
+		}
+
+		paramPrefix := strings.TrimSpace(ss1[0])
+		paramValueStr := strings.TrimSpace(ss1[1])
+
+		if err := imgParamMap.processImageBoxArg(paramPrefix, paramValueStr, &ib); err != nil {
+			return nil, "", err
+		}
+	}
+
+	return &ib, ib.PageNr, nil
+}
+
+func addImageBox(vv []string, fieldName string, im map[string]*Page) error {
+	src, url := "", ""
+	if len(vv) == 0 || vv[0] == "" {
+		return nil
+	}
+	if len(vv) == 1 && len(vv[0]) > 1 && vv[0][0] == '(' {
+		// link only, no image
+		url = vv[0][1 : len(vv[0])-1]
+	} else {
+		src = vv[0]
+		if len(vv) == 2 && len(vv[1]) > 1 {
+			url = vv[1][1 : len(vv[1])-1]
+		}
+	}
+
+	ib, pageNr, err := imageBox(fieldName, src, url)
+	if err != nil {
+		return err
+	}
+
+	if ib == nil {
+		return nil
+	}
+
+	p, ok := im[pageNr]
+	if !ok {
+		p = &Page{}
+		im[pageNr] = p
+	}
+	p.ImageBoxes = append(p.ImageBoxes, ib)
+
+	return nil
+}
+
+func validateCSVRecord(fieldNames, formRecord []string) error {
+	if len(fieldNames) != len(formRecord) {
+		return fmt.Errorf("CSV record: got %d values, want %d", len(formRecord), len(fieldNames))
+	}
+	for i, fieldName := range fieldNames {
+		if fieldName == "" || fieldName == "*" {
+			return fmt.Errorf("CSV header column %d: missing field name", i+1)
+		}
+	}
+	return nil
+}
+
+// FieldMap returns structures needed to fill a form via CSV.
+func FieldMap(fieldNames, formRecord []string) (map[string]CSVFieldAttributes, map[string]*Page, string, error) {
+	if err := validateCSVRecord(fieldNames, formRecord); err != nil {
+		return nil, nil, "", err
+	}
+	fm := map[string]CSVFieldAttributes{}
+	im := map[string]*Page{}
+	outFile := ""
+	for i, fieldName := range fieldNames {
+		var lock bool
+		if fieldName[0] == '*' {
+			lock = true
+			fieldName = fieldName[1:]
+			if fieldName[0] == '@' {
+				continue
+			}
+		}
+		vv := strings.Split(formRecord[i], ",")
+		if fieldName[0] != '@' {
+			v1 := vv[0]
+			if len(v1) > 1 && v1[0] == '*' {
+				lock = true
+				vv[0] = vv[0][1:]
+			}
+			fm[fieldName] = CSVFieldAttributes{Values: vv, Lock: lock}
+			continue
+		}
+
+		if strings.HasPrefix(fieldName, "@img") {
+			// @img defines a virtual image field by rendering an imageBox.
+			// For CSV we keep it simple and support the most important imageBox attributes only:
+			//
+			// "@img(page:1, pos:40 350, w:290, h:200, bgcol:#F5F5DC, border:5 round LightGray)"
+
+			if len(vv) == 0 || len(vv) > 2 {
+				// Skip invalid image field
+				continue
+			}
+
+			if err := addImageBox(vv, fieldName, im); err != nil {
+				return nil, nil, "", err
+			}
+
+			continue
+		}
+
+		if strings.HasPrefix(fieldName, "@filename") {
+			// @filename defines the output PDF fileName taking precedence.
+			outFile = vv[0]
+			if !strings.HasSuffix(strings.ToLower(outFile), ".pdf") {
+				outFile += ".pdf"
+			}
+		}
+
+	}
+
+	return fm, im, outFile, nil
+}
+
+// FillDetails returns a closure that returns new form data provided by CSV or JSON.
+func FillDetails(form *Form, fieldMap map[string]CSVFieldAttributes) func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool) {
+	f := form
+	fm := fieldMap
+
+	return func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool) {
+		if format != CSV && f == nil {
+			return nil, false, false
+		}
+
+		if format == CSV {
+			fa, ok := fm[id]
+			if ok {
+				return fa.Values, fa.Lock, true
+			}
+			fa, ok = fm[name]
+			if ok {
+				return fa.Values, fa.Lock, true
+			}
+			return nil, false, false
+		}
+
+		switch fieldType {
+		case FTCheckBox:
+			v, lock, ok := f.checkBoxValueAndLock(id, name)
+			c := "f"
+			if v {
+				c = "t"
+			}
+			return []string{c}, lock, ok
+
+		case FTRadioButtonGroup:
+			v, lock, ok := form.radioButtonGroupValueAndLock(id, name)
+			return []string{v}, lock, ok
+
+		case FTComboBox:
+			v, lock, ok := f.comboBoxValueAndLock(id, name)
+			return []string{v}, lock, ok
+
+		case FTListBox:
+			return f.listBoxValuesAndLock(id, name)
+
+		case FTDate:
+			v, lock, ok := f.dateFieldValueAndLock(id, name)
+			return []string{v}, lock, ok
+
+		case FTText:
+			v, lock, ok := f.textFieldValueAndLock(id, name)
+			return []string{v}, lock, ok
+		}
+
+		return nil, false, false
+	}
+}
+
+func matchingRadioButtonState(d types.Dict, vNew string) (types.Name, types.Name) {
+	var legacy types.Name
+	for k := range d {
+		if k == vNew {
+			return types.Name(k), legacy
+		}
+		if legacy != "" {
+			continue
+		}
+		s, err := types.DecodeName(k)
+		if err == nil && s == vNew {
+			legacy = types.Name(k)
+		}
+	}
+	return "", legacy
+}
+
+func radioButtonState(ctx *model.Context, d types.Dict, vNew string) (types.Name, error) {
+	var legacy types.Name
+	for i, o := range d.ArrayEntry("Kids") {
+		d, err := ctx.DereferenceDict(o)
+		if err != nil {
+			return "", fmt.Errorf("kid %d: dereference: %w", i+1, err)
+		}
+
+		d1, err := locateAPN(ctx.XRefTable, d)
+		if err != nil {
+			return "", fmt.Errorf("kid %d: appearance: %w", i+1, err)
+		}
+
+		n, legacyName := matchingRadioButtonState(d1, vNew)
+		if n != "" {
+			return n, nil
+		}
+		if legacy == "" {
+			legacy = legacyName
+		}
+	}
+	if legacy != "" {
+		return legacy, nil
+	}
+	return types.Name(vNew), nil
+}
+
+func fillRadioButtons(ctx *model.Context, d types.Dict, v types.Name) error {
+	for i, o := range d.ArrayEntry("Kids") {
+		d, err := ctx.DereferenceDict(o)
+		if err != nil {
+			return fmt.Errorf("kid %d: dereference: %w", i+1, err)
+		}
+
+		d1, err := locateAPN(ctx.XRefTable, d)
+		if err != nil {
+			return fmt.Errorf("kid %d: appearance: %w", i+1, err)
+		}
+
+		for k := range d1 {
+			if k != "Off" {
+				d["AS"] = types.Name("Off")
+				if k == v.Value() {
+					d["AS"] = v
+				}
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
+func fillRadioButtonGroup(
+	ctx *model.Context,
+	d types.Dict,
+	id, name string,
+	opts []string,
+	locked bool,
+	format DataFormat,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ok *bool) error {
+	vv, lock, found := fillDetails(id, name, FTRadioButtonGroup, format)
+	if !found {
+		return nil
+	}
+
+	changed, err := updateFieldLock(ctx.XRefTable, d, locked, lock)
+	if err != nil {
+		return err
+	}
+	if changed {
+		*ok = true
+	}
+
+	vNew := vv[0]
+
+	if len(opts) > 0 {
+		for i, o := range opts {
+			if o == vNew {
+				vNew = strconv.Itoa(i)
+				break
+			}
+		}
+	}
+
+	n, _, err := ctx.DereferenceNameEntry(d, "V")
+	if err != nil {
+		return fmt.Errorf("radio button group %s: %w", id, err)
+	}
+	if n == nil && vNew == "" {
+		return nil
+	}
+
+	v, err := radioButtonState(ctx, d, vNew)
+	if err != nil {
+		return err
+	}
+	if n != nil && n.Value() == v.Value() {
+		return nil
+	}
+
+	d["V"] = v
+
+	if err := fillRadioButtons(ctx, d, v); err != nil {
+		return err
+	}
+
+	*ok = true
+
+	return nil
+}
+
+func checkBoxASNames(ctx *model.Context, d types.Dict, kid int) (types.Name, types.Name, error) {
+	offName, yesName, err := primitives.CalcCheckBoxASNames(ctx, d)
+	if err != nil {
+		if kid > 0 {
+			return "", "", fmt.Errorf("kid %d: appearance: %w", kid, err)
+		}
+		return "", "", fmt.Errorf("appearance: %w", err)
+	}
+	return offName, yesName, nil
+}
+
+func checkBoxWidgets(ctx *model.Context, d types.Dict) ([]types.Dict, error) {
+	kids := d.ArrayEntry("Kids")
+	if len(kids) == 0 {
+		return []types.Dict{d}, nil
+	}
+	widgets := make([]types.Dict, 0, len(kids))
+	for i, kid := range kids {
+		widget, err := ctx.DereferenceDict(kid)
+		if err != nil {
+			return nil, fmt.Errorf("kid %d: dereference: %w", i+1, err)
+		}
+		widgets = append(widgets, widget)
+	}
+	return widgets, nil
+}
+
+func fillCheckBox(
+	ctx *model.Context,
+	d types.Dict,
+	id, name string,
+	locked bool,
+	format DataFormat,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ok *bool) error {
+	vv, lock, found := fillDetails(id, name, FTCheckBox, format)
+	if !found {
+		return nil
+	}
+
+	changed, err := updateFieldLock(ctx.XRefTable, d, locked, lock)
+	if err != nil {
+		return err
+	}
+	if changed {
+		*ok = true
+	}
+
+	s := strings.ToLower(vv[0])
+	vNew := strings.HasPrefix(s, "t") // true
+	vOld := false
+	if n, _, err := ctx.DereferenceNameEntry(d, "V"); err != nil {
+		return fmt.Errorf("checkbox %s: %w", id, err)
+	} else if n != nil {
+		v := n.Value()
+		vOld = len(v) > 0 && v != "Off"
+	}
+	if vNew == vOld {
+		return nil
+	}
+
+	v := types.Name("Off")
+	if vNew {
+		v = types.Name("Yes")
+	}
+
+	d["V"] = v
+	widgets, err := checkBoxWidgets(ctx, d)
+	if err != nil {
+		return err
+	}
+
+	for i, widget := range widgets {
+		if _, found := widget.Find("AS"); !found {
+			continue
+		}
+		kid := 0
+		if len(d.ArrayEntry("Kids")) > 0 {
+			kid = i + 1
+		}
+		offName, yesName, err := checkBoxASNames(ctx, widget, kid)
+		if err != nil {
+			return err
+		}
+		asName := yesName
+		if v == "Off" {
+			asName = offName
+		}
+		widget["AS"] = asName
+		d["V"] = asName
+	}
+
+	*ok = true
+	return nil
+}
+
+func fillBtn(
+	ctx *model.Context,
+	d types.Dict,
+	id, name string,
+	locked bool,
+	format DataFormat,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ok *bool) error {
+	ff, err := inheritedFieldFlags(ctx.XRefTable, d)
+	if err != nil {
+		return err
+	}
+	if ff != nil && primitives.FieldFlags(ff.Value())&primitives.FieldPushbutton > 0 {
+		return nil
+	}
+
+	opts, err := parseOptions(ctx.XRefTable, d, OPTIONAL)
+	if err != nil {
+		return err
+	}
+
+	if isRadioButtonGroup(ff) {
+		if err := fillRadioButtonGroup(ctx, d, id, name, opts, locked, format, fillDetails, ok); err != nil {
+			return err
+		}
+	} else {
+		if err := fillCheckBox(ctx, d, id, name, locked, format, fillDetails, ok); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func fillComboBox(
+	c context.Context,
+	ctx *model.Context,
+	d types.Dict,
+	id, name string,
+	opts []string,
+	locked bool,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ok *bool) error {
+	vv, lock, found := fillDetails(id, name, FTComboBox, format)
+	if !found {
+		return nil
+	}
+
+	da, _, err := ctx.DereferenceStringEntry(d, "DA")
+	if err != nil {
+		return fmt.Errorf("entry DA: %w", err)
+	}
+
+	vNew := vv[0]
+	changed, err := updateFieldLock(ctx.XRefTable, d, locked, lock)
+	if err != nil {
+		return err
+	}
+	if changed {
+		if lock {
+			if err := ensureChoiceComboAP(c, ctx, d, vNew, da, fonts); err != nil {
+				return fmt.Errorf("appearance: %w", err)
+			}
+		} else {
+			if err := deleteChoiceAP(c, ctx.XRefTable, d); err != nil {
+				return fmt.Errorf("appearance: %w", err)
+			}
+		}
+		*ok = true
+	}
+
+	vOld := ""
+	s, _, err := ctx.DereferenceStringEntry(d, "V")
+	if err != nil {
+		return fmt.Errorf("entry V: %w", err)
+	}
+	if s != nil {
+		vOld = *s
+	}
+	if vNew == vOld {
+		return nil
+	}
+
+	s1, err := types.EscapedUTF16String(vNew)
+	if err != nil {
+		return err
+	}
+
+	ind := types.Array{}
+	for i, o := range opts {
+		if o == vNew {
+			ind = append(ind, types.Integer(i))
+			break
+		}
+	}
+	if len(ind) > 0 {
+		d["I"] = ind
+		d["V"] = types.StringLiteral(*s1)
+	} else {
+		d.Delete("I")
+		d.Delete("V")
+	}
+	*ok = true
+
+	return nil
+}
+
+func updateListBoxValues(multi bool, d types.Dict, opts, vNew []string) (types.Array, error) {
+	ind := types.Array{}
+	if multi {
+		arr := types.Array{}
+		for _, v := range vNew {
+			for i, o := range opts {
+				if o == v {
+					ind = append(ind, types.Integer(i))
+					break
+				}
+			}
+			s, err := types.EscapedUTF16String(v)
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, types.StringLiteral(*s))
+		}
+		if len(vNew) > 0 {
+			d["I"] = ind
+			d["V"] = arr
+		} else {
+			d.Delete("I")
+			d.Delete("V")
+		}
+		return ind, nil
+	}
+
+	if len(vNew) == 0 {
+		d.Delete("I")
+		d.Delete("V")
+		return ind, nil
+	}
+
+	v := vNew[0]
+	s, err := types.EscapedUTF16String(v)
+	if err != nil {
+		return nil, err
+	}
+	for i, o := range opts {
+		if o == v {
+			ind = append(ind, types.Integer(i))
+			break
+		}
+	}
+	if len(ind) > 0 {
+		d["I"] = ind
+		d["V"] = types.StringLiteral(*s)
+	} else {
+		d.Delete("I")
+		d.Delete("V")
+	}
+	return ind, nil
+}
+
+func fillListBox(
+	c context.Context,
+	ctx *model.Context,
+	d types.Dict,
+	id, name string,
+	opts []string,
+	locked bool,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ff *types.Integer,
+	ok *bool) error {
+	vNew, lock, found := fillDetails(id, name, FTListBox, format)
+	if !found {
+		return nil
+	}
+
+	var vOld []string
+	multi := ff != nil && primitives.FieldFlags(ff.Value())&primitives.FieldMultiselect > 0
+	if !multi {
+		s, _, err := ctx.DereferenceStringEntry(d, "V")
+		if err != nil {
+			return fmt.Errorf("entry V: %w", err)
+		}
+		if s != nil {
+			vOld = []string{*s}
+		}
+	} else {
+		ss, err := parseStringLiteralArray(ctx.XRefTable, d, "V")
+		if err != nil {
+			return err
+		}
+		vOld = ss
+	}
+
+	changed, err := updateFieldLock(ctx.XRefTable, d, locked, lock)
+	if err != nil {
+		return err
+	}
+	if changed {
+		*ok = true
+	}
+	if locked {
+		return nil
+	}
+
+	if types.EqualSlices(vOld, vNew) {
+		return nil
+	}
+
+	ind, err := updateListBoxValues(multi, d, opts, vNew)
+	if err != nil {
+		return err
+	}
+
+	da, _, err := ctx.DereferenceStringEntry(d, "DA")
+	if err != nil {
+		return fmt.Errorf("entry DA: %w", err)
+	}
+
+	if err := ensureChoiceListAP(c, ctx, d, opts, ind, da, fonts); err != nil {
+		return fmt.Errorf("appearance: %w", err)
+	}
+
+	*ok = true
+
+	return nil
+}
+
+func fillCh(
+	c context.Context,
+	ctx *model.Context,
+	d types.Dict,
+	id, name string,
+	locked bool,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ff *types.Integer,
+	ok *bool) error {
+	opts, err := parseChoiceOptions(ctx.XRefTable, d)
+	if err != nil {
+		return err
+	}
+
+	if ff != nil && primitives.FieldFlags(ff.Value())&primitives.FieldCombo > 0 {
+		return fillComboBox(c, ctx, d, id, name, opts, locked, format, fonts, fillDetails, ok)
+	}
+
+	return fillListBox(c, ctx, d, id, name, opts, locked, format, fonts, fillDetails, ff, ok)
+}
+
+func fillDateField(
+	c context.Context,
+	ctx *model.Context,
+	d types.Dict,
+	id, name, vOld string,
+	locked bool,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ok *bool) error {
+	vv, lock, found := fillDetails(id, name, FTDate, format)
+	if !found {
+		return nil
+	}
+
+	changed, err := updateFieldLock(ctx.XRefTable, d, locked, lock)
+	if err != nil {
+		return err
+	}
+	if changed {
+		*ok = true
+	}
+
+	vNew := vv[0]
+
+	if vNew == vOld {
+		return nil
+	}
+
+	s, err := types.EscapedUTF16String(vNew)
+	if err != nil {
+		return err
+	}
+	d["V"] = types.StringLiteral(*s)
+
+	da, _, err := ctx.DereferenceStringEntry(d, "DA")
+	if err != nil {
+		return fmt.Errorf("entry DA: %w", err)
+	}
+
+	kids := d.ArrayEntry("Kids")
+	if len(kids) > 0 {
+
+		for i, o := range kids {
+			d, err := ctx.DereferenceDict(o)
+			if err != nil {
+				return fmt.Errorf("kid %d: dereference: %w", i+1, err)
+			}
+
+			if err := primitives.EnsureDateFieldAP(c, ctx, d, vNew, da, fonts); err != nil {
+				return fmt.Errorf("kid %d: appearance: %w", i+1, err)
+			}
+
+			*ok = true
+		}
+
+		return nil
+	}
+
+	if err := primitives.EnsureDateFieldAP(c, ctx, d, vNew, da, fonts); err != nil {
+		return fmt.Errorf("appearance: %w", err)
+	}
+
+	*ok = true
+	return nil
+}
+
+func fillTextField(
+	c context.Context,
+	ctx *model.Context,
+	d types.Dict,
+	id, name, vOld string,
+	locked bool,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ff *types.Integer,
+	ok *bool) error {
+	vv, lock, found := fillDetails(id, name, FTText, format)
+	if !found {
+		return nil
+	}
+
+	changed, err := updateFieldLock(ctx.XRefTable, d, locked, lock)
+	if err != nil {
+		return err
+	}
+	*ok = *ok || changed
+
+	vNew := vv[0]
+
+	if vNew == vOld {
+		return nil
+	}
+
+	s, err := types.EscapedUTF16String(vNew)
+	if err != nil {
+		return err
+	}
+	d["V"] = types.StringLiteral(*s)
+
+	multiLine, comb := textFieldFlags(ff)
+
+	maxLen := 0
+	i, _, err := ctx.XRefTable.DereferenceIntegerEntry(d, "MaxLen")
+	if err != nil {
+		return err
+	}
+	if i != nil {
+		maxLen = i.Value()
+	}
+
+	da, _, err := ctx.DereferenceStringEntry(d, "DA")
+	if err != nil {
+		return fmt.Errorf("entry DA: %w", err)
+	}
+
+	kids := d.ArrayEntry("Kids")
+	if len(kids) > 0 {
+
+		for i, o := range kids {
+			d, err := ctx.DereferenceDict(o)
+			if err != nil {
+				return fmt.Errorf("kid %d: dereference: %w", i+1, err)
+			}
+
+			if err := primitives.EnsureTextFieldAP(c, ctx, d, vNew, multiLine, comb, maxLen, da, fonts); err != nil {
+				return fmt.Errorf("kid %d: appearance: %w", i+1, err)
+			}
+
+			*ok = true
+		}
+
+		return nil
+	}
+
+	if err := primitives.EnsureTextFieldAP(c, ctx, d, vNew, multiLine, comb, maxLen, da, fonts); err != nil {
+		return fmt.Errorf("appearance: %w", err)
+	}
+
+	*ok = true
+	return nil
+}
+
+func fillTx(
+	c context.Context,
+	ctx *model.Context,
+	d types.Dict,
+	id, name string,
+	locked bool,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ff *types.Integer,
+	ok *bool) error {
+	df, err := extractDateFormat(ctx.XRefTable, d)
+	if err != nil {
+		return err
+	}
+
+	vOld, err := getV(c, ctx.XRefTable, d)
+	if err != nil {
+		return err
+	}
+
+	if df != nil {
+		return fillDateField(c, ctx, d, id, name, vOld, locked, format, fonts, fillDetails, ok)
+	}
+
+	return fillTextField(c, ctx, d, id, name, vOld, locked, format, fonts, fillDetails, ff, ok)
+}
+
+func fillField(
+	c context.Context,
+	ctx *model.Context,
+	d types.Dict,
+	id, name, ft string,
+	locked bool,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ff *types.Integer,
+	ok *bool,
+) error {
+	switch ft {
+	case "Btn":
+		return fillBtn(ctx, d, id, name, locked, format, fillDetails, ok)
+	case "Ch":
+		return fillCh(c, ctx, d, id, name, locked, format, fonts, fillDetails, ff, ok)
+	case "Tx":
+		return fillTx(c, ctx, d, id, name, locked, format, fonts, fillDetails, ff, ok)
+	}
+	return nil
+}
+
+func fillWidgetAnnots(
+	c context.Context,
+	ctx *model.Context,
+	fields types.Array,
+	indRefs map[types.IndirectRef]bool,
+	wAnnots model.Annot,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+	ok *bool) error {
+	for _, indRef := range *(wAnnots.IndRefs) {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+
+		found, fi, err := isField(c, ctx.XRefTable, indRef, fields)
+		if err != nil {
+			return fmt.Errorf("resolve field: %w", err)
+		}
+		if !found {
+			continue
+		}
+
+		id, name := fi.id, fi.name
+
+		if fi.indRef != nil {
+			if indRefs[*fi.indRef] {
+				continue
+			}
+			indRefs[*fi.indRef] = true
+			indRef = *fi.indRef
+		}
+
+		d, err := ctx.DereferenceDict(indRef)
+		if err != nil {
+			return fmt.Errorf("field %s obj#%d: dereference: %w", id, indRef.ObjectNumber.Value(), err)
+		}
+		if len(d) == 0 {
+			continue
+		}
+
+		ff, locked, err := formFieldFlags(ctx.XRefTable, d)
+		if err != nil {
+			return fmt.Errorf("field %s: %w", id, err)
+		}
+
+		ft := fi.ft
+		if ft == nil {
+			ft, _, err = ctx.DereferenceNameEntry(d, "FT")
+			if err != nil {
+				return fmt.Errorf("field %s: entry FT: %w", id, err)
+			}
+			if ft == nil {
+				return fmt.Errorf("corrupt form field %s: missing entry FT: %s", id, d)
+			}
+		}
+
+		if err = fillField(c, ctx, d, id, name, ft.Value(), locked, format, fonts, fillDetails, ff, ok); err != nil {
+			return fmt.Errorf("field %s: %w", id, err)
+		}
+	}
+
+	return nil
+}
+
+func setupFillFonts(c context.Context, xRefTable *model.XRefTable) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	d, err := primitives.FormFontResDict(xRefTable)
+	if err != nil {
+		return fmt.Errorf("AcroForm DR Font: %w", err)
+	}
+
+	m := xRefTable.FillFonts
+
+	if d == nil {
+		// TODO setup/reuse Helvetica and add to m
+		return nil
+	}
+
+	for k, v := range d {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		indRef, ok := v.(types.IndirectRef)
+		if !ok {
+			return fmt.Errorf("form font resource %q: expected indirect reference, got %T", k, v)
+		}
+		fontName, _, _, err := primitives.FormFontDetails(c, xRefTable, indRef)
+		if err != nil {
+			return fmt.Errorf("form font resource %q obj#%d: %w", k, indRef.ObjectNumber.Value(), err)
+		}
+
+		supported, err := xRefTable.FontRepository().SupportedFont(c, fontName)
+		if err != nil {
+			return fmt.Errorf("form font resource %q: load metrics: %w", k, err)
+		}
+		if supported {
+			m[k] = indRef
+		}
+	}
+
+	return nil
+}
+
+// FillForm populates form fields, supports virtual image fields and supports cancellation.
+func FillForm(c context.Context, ctx *model.Context, fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool), imgs map[string]*Page, format DataFormat) (bool, []*model.Page, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, nil, err
+	}
+	if fillDetails == nil {
+		return false, nil, errors.New("missing fill details")
+	}
+	if format != CSV && format != JSON {
+		return false, nil, fmt.Errorf("unsupported data format: %d", format)
+	}
+	xRefTable := ctx.XRefTable
+
+	fields, err := Fields(xRefTable)
+	if err != nil {
+		return false, nil, fmt.Errorf("AcroForm Fields: %w", err)
+	}
+
+	fonts := map[string]types.IndirectRef{}
+
+	if err := setupFillFonts(c, xRefTable); err != nil {
+		return false, nil, fmt.Errorf("form fonts: setup: %w", err)
+	}
+	if err := contextutil.Check(c); err != nil {
+		return false, nil, err
+	}
+
+	ok, err := fillFormPages(c, ctx, fields, format, fonts, fillDetails)
+	if err != nil {
+		return false, nil, err
+	}
+
+	if err := pdffont.UpdateUserfonts(c, ctx.XRefTable, fonts); err != nil {
+		return false, nil, fmt.Errorf("form fonts: update: %w", err)
+	}
+
+	var pages []*model.Page
+
+	if len(imgs) > 0 {
+		if pages, err = addImages(c, ctx, imgs); err != nil {
+			return false, nil, fmt.Errorf("form images: %w", err)
+		}
+	}
+	if err := contextutil.Check(c); err != nil {
+		return false, nil, err
+	}
+
+	// pdfcpu provides all appearance streams for form fields.
+	// Yet for some files and viewers form fields don't get rendered.
+	// In these cases you can force the viewer to provide form field appearance streams.
+	if ctx.NeedAppearances {
+		xRefTable.Form["NeedAppearances"] = types.Boolean(true)
+	}
+
+	return ok, pages, contextutil.Check(c)
+}
+
+// fillFormPages populates form fields page by page and supports cancellation.
+func fillFormPages(
+	c context.Context,
+	ctx *model.Context,
+	fields types.Array,
+	format DataFormat,
+	fonts map[string]types.IndirectRef,
+	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
+) (bool, error) {
+	indRefs := map[types.IndirectRef]bool{}
+	var ok bool
+	for i := 1; i <= ctx.PageCount; i++ {
+		if err := contextutil.Check(c); err != nil {
+			return false, err
+		}
+		pgAnnots := ctx.PageAnnots[i]
+		if len(pgAnnots) == 0 {
+			continue
+		}
+		wAnnots, found := pgAnnots[model.AnnWidget]
+		if !found {
+			continue
+		}
+		if err := fillWidgetAnnots(c, ctx, fields, indRefs, wAnnots, format, fonts, fillDetails, &ok); err != nil {
+			return false, fmt.Errorf("page %d: %w", i, err)
+		}
+	}
+	return ok, contextutil.Check(c)
+}

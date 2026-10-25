@@ -1,0 +1,908 @@
+/*
+Copyright 2023 The pdfcpu Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package model
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+)
+
+// PageMode identifies how a document is displayed when opened.
+type PageMode int
+
+// Supported initial page modes.
+const (
+	PageModeUseNone PageMode = iota
+	PageModeUseOutlines
+	PageModeUseThumbs
+	PageModeFullScreen
+	PageModeUseOC
+	PageModeUseAttachments
+)
+
+// PageModeFor returns a page mode for s.
+func PageModeFor(s string) *PageMode {
+	if s == "" {
+		return nil
+	}
+	var pm PageMode
+	switch strings.ToLower(s) {
+	case "usenone":
+		pm = PageModeUseNone
+	case "useoutlines":
+		pm = PageModeUseOutlines
+	case "usethumbs":
+		pm = PageModeUseThumbs
+	case "fullscreen":
+		pm = PageModeFullScreen
+	case "useoc":
+		pm = PageModeUseOC
+	case "useattachments":
+		pm = PageModeUseAttachments
+	default:
+		return nil
+	}
+	return &pm
+}
+
+// String returns the string value of pm.
+func (pm *PageMode) String() string {
+	if pm == nil {
+		return ""
+	}
+	switch *pm {
+	case PageModeUseNone:
+		return "UseNone" // = default
+	case PageModeUseOutlines:
+		return "UseOutlines"
+	case PageModeUseThumbs:
+		return "UseThumbs"
+	case PageModeFullScreen:
+		return "FullScreen"
+	case PageModeUseOC:
+		return "UseOC"
+	case PageModeUseAttachments:
+		return "UseAttachments"
+	default:
+		return "?"
+	}
+}
+
+// PageLayout identifies the page arrangement used when a document is opened.
+type PageLayout int
+
+// Supported initial page layouts.
+const (
+	PageLayoutSinglePage PageLayout = iota
+	PageLayoutTwoColumnLeft
+	PageLayoutTwoColumnRight
+	PageLayoutTwoPageLeft
+	PageLayoutTwoPageRight
+	PageLayoutOneColumn
+)
+
+// PageLayoutFor returns the page layout for s.
+func PageLayoutFor(s string) *PageLayout {
+	if s == "" {
+		return nil
+	}
+	var pl PageLayout
+	switch strings.ToLower(s) {
+	case "singlepage":
+		pl = PageLayoutSinglePage
+	case "onecolumn":
+		pl = PageLayoutOneColumn
+	case "twocolumnleft":
+		pl = PageLayoutTwoColumnLeft
+	case "twocolumnright":
+		pl = PageLayoutTwoColumnRight
+	case "twopageleft":
+		pl = PageLayoutTwoPageLeft
+	case "twopageright":
+		pl = PageLayoutTwoPageRight
+	default:
+		return nil
+	}
+	return &pl
+}
+
+// String returns the string value of pl.
+func (pl *PageLayout) String() string {
+	if pl == nil {
+		return ""
+	}
+	switch *pl {
+	case PageLayoutSinglePage:
+		return "SinglePage" // = default
+	case PageLayoutOneColumn:
+		return "OneColumn"
+	case PageLayoutTwoColumnLeft:
+		return "TwoColumnLeft"
+	case PageLayoutTwoColumnRight:
+		return "TwoColumnRight"
+	case PageLayoutTwoPageLeft:
+		return "TwoPageLeft"
+	case PageLayoutTwoPageRight:
+		return "TwoPageRight"
+	default:
+		return "?"
+	}
+}
+
+// NonFullScreenPageMode identifies the page mode used after leaving full-screen mode.
+type NonFullScreenPageMode PageMode
+
+// Supported page modes after leaving full-screen mode.
+const (
+	NFSPageModeUseNone NonFullScreenPageMode = iota
+	NFSPageModeUseOutlines
+	NFSPageModeUseThumb
+	NFSPageModeUseOC
+)
+
+// PageBoundary identifies a PDF page boundary box.
+type PageBoundary int
+
+// Supported PDF page boundary boxes.
+const (
+	MediaBox PageBoundary = iota
+	CropBox
+	TrimBox
+	BleedBox
+	ArtBox
+)
+
+// PageBoundaryFor returns a page boundary for s.
+func PageBoundaryFor(s string) *PageBoundary {
+	if s == "" {
+		return nil
+	}
+	var pb PageBoundary
+	switch strings.ToLower(s) {
+	case "mediabox":
+		pb = MediaBox
+	case "cropbox":
+		pb = CropBox
+	case "trimbox":
+		pb = TrimBox
+	case "bleedbox":
+		pb = BleedBox
+	case "artbox":
+		pb = ArtBox
+	default:
+		return nil
+	}
+	return &pb
+}
+
+// String returns the string value of pb.
+func (pb *PageBoundary) String() string {
+	if pb == nil {
+		return ""
+	}
+	switch *pb {
+	case MediaBox:
+		return "MediaBox"
+	case CropBox:
+		return "CropBox"
+	case TrimBox:
+		return "TrimBox"
+	case BleedBox:
+		return "BleedBox"
+	case ArtBox:
+		return "ArtBox"
+	default:
+		return "?"
+	}
+}
+
+// PrintScaling identifies the page-scaling option used for printing.
+type PrintScaling int
+
+// Supported print-scaling options.
+const (
+	PrintScalingNone PrintScaling = iota
+	PrintScalingAppDefault
+)
+
+// PrintScalingFor returns print scaling for s.
+func PrintScalingFor(s string) *PrintScaling {
+	if s == "" {
+		return nil
+	}
+	var ps PrintScaling
+	switch strings.ToLower(s) {
+	case "none":
+		ps = PrintScalingNone
+	case "appdefault":
+		ps = PrintScalingAppDefault
+	default:
+		return nil
+	}
+	return &ps
+}
+
+// String returns the string value of ps.
+func (ps *PrintScaling) String() string {
+	if ps == nil {
+		return ""
+	}
+	switch *ps {
+	case PrintScalingNone:
+		return "None"
+	case PrintScalingAppDefault:
+		return "AppDefault"
+	default:
+		return "?"
+	}
+}
+
+// Direction identifies the predominant reading order for pages.
+type Direction int
+
+// Supported page reading directions.
+const (
+	L2R Direction = iota
+	R2L
+)
+
+// DirectionFor returns the direction for s.
+func DirectionFor(s string) *Direction {
+	if s == "" {
+		return nil
+	}
+	var d Direction
+	switch strings.ToLower(s) {
+	case "l2r":
+		d = L2R
+	case "r2l":
+		d = R2L
+	default:
+		return nil
+	}
+	return &d
+}
+
+// String returns the string value of d.
+func (d *Direction) String() string {
+	if d == nil {
+		return ""
+	}
+	switch *d {
+	case L2R:
+		return "L2R"
+	case R2L:
+		return "R2L"
+	default:
+		return "?"
+	}
+}
+
+// PaperHandling identifies the duplex mode used when printing.
+type PaperHandling int
+
+// Supported paper-handling modes.
+const (
+	Simplex PaperHandling = iota
+	DuplexFlipShortEdge
+	DuplexFlipLongEdge
+)
+
+// PaperHandlingFor returns paper handling for s.
+func PaperHandlingFor(s string) *PaperHandling {
+	if s == "" {
+		return nil
+	}
+	var ph PaperHandling
+	switch strings.ToLower(s) {
+	case "simplex":
+		ph = Simplex
+	case "duplexflipshortedge":
+		ph = DuplexFlipShortEdge
+	case "duplexfliplongedge":
+		ph = DuplexFlipLongEdge
+	default:
+		return nil
+	}
+	return &ph
+}
+
+// String returns the string value of ph.
+func (ph *PaperHandling) String() string {
+	if ph == nil {
+		return ""
+	}
+	switch *ph {
+	case Simplex:
+		return "Simplex"
+	case DuplexFlipShortEdge:
+		return "DuplexFlipShortEdge"
+	case DuplexFlipLongEdge:
+		return "DuplexFlipLongEdge"
+	default:
+		return "?"
+	}
+}
+
+// ViewerPreferences see 12.2 Table 147
+type ViewerPreferences struct {
+	HideToolbar           *bool
+	HideMenubar           *bool
+	HideWindowUI          *bool
+	FitWindow             *bool
+	CenterWindow          *bool
+	DisplayDocTitle       *bool // since 1.4
+	NonFullScreenPageMode *NonFullScreenPageMode
+	Direction             *Direction     // since 1.3
+	ViewArea              *PageBoundary  // since 1.4 to 1.7
+	ViewClip              *PageBoundary  // since 1.4 to 1.7
+	PrintArea             *PageBoundary  // since 1.4 to 1.7
+	PrintClip             *PageBoundary  // since 1.4 to 1.7
+	PrintScaling          *PrintScaling  // since 1.6
+	Duplex                *PaperHandling // since 1.7
+	PickTrayByPDFSize     *bool          // since 1.7
+	PrintPageRange        []int          // since 1.7
+	NumCopies             *types.Integer // since 1.7
+	Enforce               []string       // since 2.0
+}
+
+func (vp *ViewerPreferences) validatePrinterPreferences(version Version) error {
+	if vp.PrintScaling != nil && version < V16 {
+		return fmt.Errorf("invalid viewer preference \"PrintScaling\" - since PDF 1.6, got: %v", version)
+	}
+	if vp.Duplex != nil && version < V17 {
+		return fmt.Errorf("invalid viewer preference \"Duplex\" - since PDF 1.7, got: %v", version)
+	}
+	if vp.PickTrayByPDFSize != nil && version < V17 {
+		return fmt.Errorf("invalid viewer preference \"PickTrayByPDFSize\" - since PDF 1.7, got: %v", version)
+	}
+	if len(vp.PrintPageRange) > 0 && version < V17 {
+		return fmt.Errorf("invalid viewer preference \"PrintPageRange\" - since PDF 1.7, got: %v", version)
+	}
+	if vp.NumCopies != nil && version < V17 {
+		return fmt.Errorf("invalid viewer preference \"NumCopies\" - since PDF 1.7, got: %v", version)
+	}
+	if len(vp.Enforce) > 0 && version < V20 {
+		return fmt.Errorf("invalid viewer preference \"Enforce\" - since PDF 2.0, got: %v", version)
+	}
+
+	return nil
+}
+
+// Validate validates vp for version.
+func (vp *ViewerPreferences) Validate(version Version) error {
+	if vp.Direction != nil && version < V13 {
+		return fmt.Errorf("invalid viewer preference \"Direction\" - since PDF 1.3, got: %v", version)
+	}
+	if vp.ViewArea != nil && (version < V14 || version > V17) {
+		return fmt.Errorf("invalid viewer preference \"ViewArea\" - since PDF 1.4 until PDF 1.7, got: %v", version)
+	}
+	if vp.ViewClip != nil && (version < V14 || version > V17) {
+		return fmt.Errorf("invalid viewer preference \"ViewClip\" - since PDF 1.4 until PDF 1.7, got: %v", version)
+	}
+	if vp.PrintArea != nil && (version < V14 || version > V17) {
+		return fmt.Errorf("invalid viewer preference \"PrintArea\" - since PDF 1.4 until PDF 1.7, got: %v", version)
+	}
+	if vp.PrintClip != nil && (version < V14 || version > V17) {
+		return fmt.Errorf("invalid viewer preference \"PrintClip\" - since PDF 1.4 until PDF 1.7, got: %v", version)
+	}
+
+	return vp.validatePrinterPreferences(version)
+}
+
+// SetHideToolBar sets hide tool bar.
+func (vp *ViewerPreferences) SetHideToolBar(val bool) {
+	vp.HideToolbar = &val
+}
+
+// SetHideMenuBar sets hide menu bar.
+func (vp *ViewerPreferences) SetHideMenuBar(val bool) {
+	vp.HideMenubar = &val
+}
+
+// SetHideWindowUI sets hide window ui.
+func (vp *ViewerPreferences) SetHideWindowUI(val bool) {
+	vp.HideWindowUI = &val
+}
+
+// SetFitWindow sets fit window.
+func (vp *ViewerPreferences) SetFitWindow(val bool) {
+	vp.FitWindow = &val
+}
+
+// SetCenterWindow sets center window.
+func (vp *ViewerPreferences) SetCenterWindow(val bool) {
+	vp.CenterWindow = &val
+}
+
+// SetDisplayDocTitle sets display doc title.
+func (vp *ViewerPreferences) SetDisplayDocTitle(val bool) {
+	vp.DisplayDocTitle = &val
+}
+
+// SetPickTrayByPDFSize sets pick tray by PDF size.
+func (vp *ViewerPreferences) SetPickTrayByPDFSize(val bool) {
+	vp.PickTrayByPDFSize = &val
+}
+
+// SetNumCopies sets num copies.
+func (vp *ViewerPreferences) SetNumCopies(i int) {
+	vp.NumCopies = (*types.Integer)(&i)
+}
+
+func (vp *ViewerPreferences) populatePrinterPreferences(vp1 *ViewerPreferences) {
+	if vp1.PrintArea != nil {
+		vp.PrintArea = vp1.PrintArea
+	}
+	if vp1.PrintClip != nil {
+		vp.PrintClip = vp1.PrintClip
+	}
+	if vp1.PrintScaling != nil {
+		vp.PrintScaling = vp1.PrintScaling
+	}
+	if vp1.Duplex != nil {
+		vp.Duplex = vp1.Duplex
+	}
+	if vp1.PickTrayByPDFSize != nil {
+		vp.PickTrayByPDFSize = vp1.PickTrayByPDFSize
+	}
+	if len(vp1.PrintPageRange) > 0 {
+		vp.PrintPageRange = vp1.PrintPageRange
+	}
+	if vp1.NumCopies != nil {
+		vp.NumCopies = vp1.NumCopies
+	}
+	if len(vp1.Enforce) > 0 {
+		vp.Enforce = vp1.Enforce
+	}
+}
+
+// Populate populates vp with vp1.
+func (vp *ViewerPreferences) Populate(vp1 *ViewerPreferences) {
+	if vp1.HideToolbar != nil {
+		vp.HideToolbar = vp1.HideToolbar
+	}
+	if vp1.HideMenubar != nil {
+		vp.HideMenubar = vp1.HideMenubar
+	}
+	if vp1.HideWindowUI != nil {
+		vp.HideWindowUI = vp1.HideWindowUI
+	}
+	if vp1.FitWindow != nil {
+		vp.FitWindow = vp1.FitWindow
+	}
+	if vp1.CenterWindow != nil {
+		vp.CenterWindow = vp1.CenterWindow
+	}
+	if vp1.DisplayDocTitle != nil {
+		vp.DisplayDocTitle = vp1.DisplayDocTitle
+	}
+	if vp1.NonFullScreenPageMode != nil {
+		vp.NonFullScreenPageMode = vp1.NonFullScreenPageMode
+	}
+	if vp1.Direction != nil {
+		vp.Direction = vp1.Direction
+	}
+	if vp1.ViewArea != nil {
+		vp.ViewArea = vp1.ViewArea
+	}
+	if vp1.ViewClip != nil {
+		vp.ViewClip = vp1.ViewClip
+	}
+
+	vp.populatePrinterPreferences(vp1)
+}
+
+// DefaultViewerPreferences returns the default viewer preferences.
+func DefaultViewerPreferences(version Version) *ViewerPreferences {
+	vp := ViewerPreferences{}
+	vp.SetHideToolBar(false)
+	vp.SetHideMenuBar(false)
+	vp.SetHideWindowUI(false)
+	vp.SetFitWindow(false)
+	vp.SetCenterWindow(false)
+	if version >= V14 {
+		vp.SetDisplayDocTitle(false)
+	}
+	vp.NonFullScreenPageMode = (*NonFullScreenPageMode)(PageModeFor("UseNone"))
+	if version >= V13 {
+		vp.Direction = DirectionFor("L2R")
+	}
+	if version >= V14 && version < V20 {
+		vp.ViewArea = PageBoundaryFor("CropBox")
+		vp.ViewClip = PageBoundaryFor("CropBox")
+		vp.PrintArea = PageBoundaryFor("CropBox")
+		vp.PrintClip = PageBoundaryFor("CropBox")
+	}
+	if version >= V16 {
+		vp.PrintScaling = PrintScalingFor("AppDefault")
+	}
+	if version >= V17 {
+		vp.SetNumCopies(1)
+	}
+
+	return &vp
+}
+
+// ViewerPreferencesWithDefaults returns viewer preferences with defaults.
+func ViewerPreferencesWithDefaults(vp *ViewerPreferences, version Version) (*ViewerPreferences, error) {
+	vp1 := DefaultViewerPreferences(version)
+
+	if vp == nil {
+		return vp1, nil
+	}
+
+	vp1.Populate(vp)
+
+	return vp1, nil
+}
+
+// ViewerPrefJSON represents viewer preferences in their JSON form.
+type ViewerPrefJSON struct {
+	HideToolbar           *bool    `json:"hideToolbar,omitempty"`
+	HideMenubar           *bool    `json:"hideMenubar,omitempty"`
+	HideWindowUI          *bool    `json:"hideWindowUI,omitempty"`
+	FitWindow             *bool    `json:"fitWindow,omitempty"`
+	CenterWindow          *bool    `json:"centerWindow,omitempty"`
+	DisplayDocTitle       *bool    `json:"displayDocTitle,omitempty"`
+	NonFullScreenPageMode string   `json:"nonFullScreenPageMode,omitempty"`
+	Direction             string   `json:"direction,omitempty"`
+	ViewArea              string   `json:"viewArea,omitempty"`
+	ViewClip              string   `json:"viewClip,omitempty"`
+	PrintArea             string   `json:"printArea,omitempty"`
+	PrintClip             string   `json:"printClip,omitempty"`
+	PrintScaling          string   `json:"printScaling,omitempty"`
+	Duplex                string   `json:"duplex,omitempty"`
+	PickTrayByPDFSize     *bool    `json:"pickTrayByPDFSize,omitempty"`
+	PrintPageRange        []int    `json:"printPageRange,omitempty"`
+	NumCopies             *int     `json:"numCopies,omitempty"`
+	Enforce               []string `json:"enforce,omitempty"`
+}
+
+// MarshalJSON marshals JSON data.
+func (vp *ViewerPreferences) MarshalJSON() ([]byte, error) {
+	vpJSON := ViewerPrefJSON{
+		HideToolbar:           vp.HideToolbar,
+		HideMenubar:           vp.HideMenubar,
+		HideWindowUI:          vp.HideWindowUI,
+		FitWindow:             vp.FitWindow,
+		CenterWindow:          vp.CenterWindow,
+		DisplayDocTitle:       vp.DisplayDocTitle,
+		NonFullScreenPageMode: (*PageMode)(vp.NonFullScreenPageMode).String(),
+		Direction:             vp.Direction.String(),
+		ViewArea:              vp.ViewArea.String(),
+		ViewClip:              vp.ViewClip.String(),
+		PrintArea:             vp.PrintArea.String(),
+		PrintClip:             vp.PrintClip.String(),
+		PrintScaling:          vp.PrintScaling.String(),
+		Duplex:                vp.Duplex.String(),
+		PickTrayByPDFSize:     vp.PickTrayByPDFSize,
+		PrintPageRange:        vp.PrintPageRange,
+		NumCopies:             (*int)(vp.NumCopies),
+	}
+
+	vpJSON.Enforce = vp.Enforce
+
+	return json.Marshal(&vpJSON)
+}
+
+func (vp *ViewerPreferences) unmarshalPrintPageRange(vpJSON ViewerPrefJSON) error {
+	if len(vpJSON.PrintPageRange) > 0 {
+		arr := vpJSON.PrintPageRange
+		if len(arr)%2 > 0 {
+			return errors.New("invalid \"PrintPageRange\" - expecting pairs of ascending page numbers")
+		}
+		for i := 0; i < len(arr); i += 2 {
+			if arr[i] >= arr[i+1] {
+				// TODO validate ascending, non overlapping int intervals.
+				return errors.New("invalid \"PrintPageRange\" - expecting pairs of ascending page numbers")
+			}
+		}
+		vp.PrintPageRange = append([]int(nil), arr...)
+	}
+
+	return nil
+}
+
+func (vp *ViewerPreferences) unmarshalPrinterPreferences(vpJSON ViewerPrefJSON) error {
+	vp.PrintArea = PageBoundaryFor(vpJSON.PrintArea)
+	if vpJSON.PrintArea != "" && vp.PrintArea == nil {
+		return fmt.Errorf("unknown \"PrintArea\", got: %s want one of: MediaBox, CropBox, TrimBox, BleedBox, ArtBox", vpJSON.PrintArea)
+	}
+
+	vp.PrintClip = PageBoundaryFor(vpJSON.PrintClip)
+	if vpJSON.PrintClip != "" && vp.PrintClip == nil {
+		return fmt.Errorf("unknown \"PrintClip\", got: %s want one of: MediaBox, CropBox, TrimBox, BleedBox, ArtBox", vpJSON.PrintClip)
+	}
+
+	vp.PrintScaling = PrintScalingFor(vpJSON.PrintScaling)
+	if vpJSON.PrintScaling != "" && vp.PrintScaling == nil {
+		return fmt.Errorf("unknown \"PrintScaling\", got: %s, want one of: None, AppDefault", vpJSON.PrintScaling)
+	}
+
+	vp.Duplex = PaperHandlingFor(vpJSON.Duplex)
+	if vpJSON.Duplex != "" && vp.Duplex == nil {
+		return fmt.Errorf("unknown \"Duplex\", got: %s, want one of: Simplex, DuplexFlipShortEdge, DuplexFlipLongEdge", vpJSON.Duplex)
+	}
+
+	if err := vp.unmarshalPrintPageRange(vpJSON); err != nil {
+		return err
+	}
+
+	if len(vpJSON.Enforce) > 1 {
+		return errors.New("\"Enforce\" must be array with one element: \"PrintScaling\"")
+	}
+
+	if len(vpJSON.Enforce) > 0 {
+		if vpJSON.Enforce[0] != "PrintScaling" {
+			return errors.New("\"Enforce\" must be array with one element: \"PrintScaling\"")
+		}
+		vp.Enforce = []string{"PrintScaling"}
+	}
+
+	return nil
+}
+
+// UnmarshalJSON unmarshals JSON data.
+func (vp *ViewerPreferences) UnmarshalJSON(data []byte) error {
+	vpJSON := ViewerPrefJSON{}
+
+	if err := json.Unmarshal(data, &vpJSON); err != nil {
+		return err
+	}
+
+	*vp = ViewerPreferences{
+		HideToolbar:       vpJSON.HideToolbar,
+		HideMenubar:       vpJSON.HideMenubar,
+		HideWindowUI:      vpJSON.HideWindowUI,
+		FitWindow:         vpJSON.FitWindow,
+		CenterWindow:      vpJSON.CenterWindow,
+		DisplayDocTitle:   vpJSON.DisplayDocTitle,
+		PickTrayByPDFSize: vpJSON.PickTrayByPDFSize,
+		NumCopies:         (*types.Integer)(vpJSON.NumCopies),
+	}
+
+	if vp.NumCopies != nil && *vp.NumCopies < 1 {
+		return fmt.Errorf("invalid \"NumCopies\", got: %d, want a numerical value > 0", *vp.NumCopies)
+	}
+
+	vp.NonFullScreenPageMode = (*NonFullScreenPageMode)(PageModeFor(vpJSON.NonFullScreenPageMode))
+	if vpJSON.NonFullScreenPageMode != "" {
+		if vp.NonFullScreenPageMode == nil {
+			return fmt.Errorf("unknown \"NonFullScreenPageMode\", got: %s want one of: UseNone, UseOutlines, UseThumbs, UseOC", vpJSON.NonFullScreenPageMode)
+		}
+		pm := (PageMode)(*vp.NonFullScreenPageMode)
+		if pm == PageModeFullScreen || pm == PageModeUseAttachments {
+			return fmt.Errorf("unknown \"NonFullScreenPageMode\", got: %s want one of: UseNone, UseOutlines, UseThumbs, UseOC", vpJSON.NonFullScreenPageMode)
+		}
+	}
+
+	vp.Direction = DirectionFor(vpJSON.Direction)
+	if vpJSON.Direction != "" && vp.Direction == nil {
+		return fmt.Errorf("unknown \"Direction\", got: %s want one of: L2R, R2L", vpJSON.Direction)
+	}
+
+	vp.ViewArea = PageBoundaryFor(vpJSON.ViewArea)
+	if vpJSON.ViewArea != "" && vp.ViewArea == nil {
+		return fmt.Errorf("unknown \"ViewArea\", got: %s want one of: MediaBox, CropBox, TrimBox, BleedBox, ArtBox", vpJSON.ViewArea)
+	}
+
+	vp.ViewClip = PageBoundaryFor(vpJSON.ViewClip)
+	if vpJSON.ViewClip != "" && vp.ViewClip == nil {
+		return fmt.Errorf("unknown \"ViewClip\", got: %s want one of: MediaBox, CropBox, TrimBox, BleedBox, ArtBox", vpJSON.ViewClip)
+	}
+
+	return vp.unmarshalPrinterPreferences(vpJSON)
+}
+
+func renderViewerFlags(vp ViewerPreferences, ss *[]string) {
+	if vp.HideToolbar != nil {
+		*ss = append(*ss, fmt.Sprintf("%22s%s = %t", "", "HideToolbar", *vp.HideToolbar))
+	}
+
+	if vp.HideMenubar != nil {
+		*ss = append(*ss, fmt.Sprintf("%22s%s = %t", "", "HideMenubar", *vp.HideMenubar))
+	}
+
+	if vp.HideWindowUI != nil {
+		*ss = append(*ss, fmt.Sprintf("%22s%s = %t", "", "HideWindowUI", *vp.HideWindowUI))
+	}
+
+	if vp.FitWindow != nil {
+		*ss = append(*ss, fmt.Sprintf("%22s%s = %t", "", "FitWindow", *vp.FitWindow))
+	}
+
+	if vp.CenterWindow != nil {
+		*ss = append(*ss, fmt.Sprintf("%22s%s = %t", "", "CenterWindow", *vp.CenterWindow))
+	}
+
+	if vp.DisplayDocTitle != nil {
+		*ss = append(*ss, fmt.Sprintf("%22s%s = %t", "", "DisplayDocTitle", *vp.DisplayDocTitle))
+	}
+
+	if vp.NonFullScreenPageMode != nil {
+		pm := PageMode(*vp.NonFullScreenPageMode)
+		*ss = append(*ss, fmt.Sprintf("%22s%s = %s", "", "NonFullScreenPageMode", pm.String()))
+	}
+}
+
+func listViewerFlags(vp ViewerPreferences, ss *[]string) {
+	if vp.HideToolbar != nil {
+		*ss = append(*ss, fmt.Sprintf("%s = %t", "HideToolbar", *vp.HideToolbar))
+	}
+
+	if vp.HideMenubar != nil {
+		*ss = append(*ss, fmt.Sprintf("%s = %t", "HideMenubar", *vp.HideMenubar))
+	}
+
+	if vp.HideWindowUI != nil {
+		*ss = append(*ss, fmt.Sprintf("%s = %t", "HideWindowUI", *vp.HideWindowUI))
+	}
+
+	if vp.FitWindow != nil {
+		*ss = append(*ss, fmt.Sprintf("%s = %t", "FitWindow", *vp.FitWindow))
+	}
+
+	if vp.CenterWindow != nil {
+		*ss = append(*ss, fmt.Sprintf("%s = %t", "CenterWindow", *vp.CenterWindow))
+	}
+
+	if vp.DisplayDocTitle != nil {
+		*ss = append(*ss, fmt.Sprintf("%s = %t", "DisplayDocTitle", *vp.DisplayDocTitle))
+	}
+
+	if vp.NonFullScreenPageMode != nil {
+		pm := PageMode(*vp.NonFullScreenPageMode)
+		*ss = append(*ss, fmt.Sprintf("%s = %s", "NonFullScreenPageMode", pm.String()))
+	}
+}
+
+func (vp ViewerPreferences) listPrinterPreferences() []string {
+	var ss []string
+
+	if vp.PrintArea != nil {
+		ss = append(ss, fmt.Sprintf("%s = %s", "PrintArea", vp.PrintArea))
+	}
+
+	if vp.PrintClip != nil {
+		ss = append(ss, fmt.Sprintf("%s = %s", "PrintClip", vp.PrintClip))
+	}
+
+	if vp.PrintScaling != nil {
+		ss = append(ss, fmt.Sprintf("%s = %s", "PrintScaling", vp.PrintScaling))
+	}
+
+	if vp.Duplex != nil {
+		ss = append(ss, fmt.Sprintf("%s = %s", "Duplex", vp.Duplex))
+	}
+
+	if vp.PickTrayByPDFSize != nil {
+		ss = append(ss, fmt.Sprintf("%s = %t", "PickTrayByPDFSize", *vp.PickTrayByPDFSize))
+	}
+
+	if len(vp.PrintPageRange) > 0 {
+		var ss1 []string
+		for i := 0; i < len(vp.PrintPageRange); i += 2 {
+			ss1 = append(ss1, fmt.Sprintf("%d-%d", vp.PrintPageRange[i], vp.PrintPageRange[i+1]))
+		}
+		ss = append(ss, fmt.Sprintf("%s = %s", "PrintPageRange", strings.Join(ss1, ",")))
+	}
+
+	if vp.NumCopies != nil {
+		ss = append(ss, fmt.Sprintf("%s = %d", "NumCopies", *vp.NumCopies))
+	}
+
+	if len(vp.Enforce) > 0 {
+		ss = append(ss, fmt.Sprintf("%s = %s", "Enforce", strings.Join(vp.Enforce, ",")))
+	}
+
+	return ss
+}
+
+// List generates output for the viewer pref command.
+func (vp ViewerPreferences) List() []string {
+	var ss []string
+
+	listViewerFlags(vp, &ss)
+
+	if vp.Direction != nil {
+		ss = append(ss, fmt.Sprintf("%s = %s", "Direction", vp.Direction))
+	}
+
+	if vp.ViewArea != nil {
+		ss = append(ss, fmt.Sprintf("%s = %s", "ViewArea", vp.ViewArea))
+	}
+
+	if vp.ViewClip != nil {
+		ss = append(ss, fmt.Sprintf("%s = %s", "ViewClip", vp.ViewClip))
+	}
+
+	ss = append(ss, vp.listPrinterPreferences()...)
+
+	if len(ss) > 0 {
+		ss1 := []string{"Viewer preferences:"}
+		for _, s := range ss {
+			ss1 = append(ss1, "   "+s)
+		}
+		ss = ss1
+	} else {
+		ss = append(ss, "No viewer preferences available.")
+	}
+
+	return ss
+}
+
+// String returns the string value of vp.
+func (vp ViewerPreferences) String() string {
+	var ss []string
+
+	renderViewerFlags(vp, &ss)
+
+	if vp.Direction != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "Direction", vp.Direction))
+	}
+
+	if vp.ViewArea != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "ViewArea", vp.ViewArea))
+	}
+
+	if vp.ViewClip != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "ViewClip", vp.ViewClip))
+	}
+
+	if vp.PrintArea != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "PrintArea", vp.PrintArea))
+	}
+
+	if vp.PrintClip != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "PrintClip", vp.PrintClip))
+	}
+
+	if vp.PrintScaling != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "PrintScaling", vp.PrintScaling))
+	}
+
+	if vp.Duplex != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "Duplex", vp.Duplex))
+	}
+
+	if vp.PickTrayByPDFSize != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %t", "", "PickTrayByPDFSize", *vp.PickTrayByPDFSize))
+	}
+
+	if len(vp.PrintPageRange) > 0 {
+		var ss1 []string
+		for i := 0; i < len(vp.PrintPageRange); i += 2 {
+			ss1 = append(ss1, fmt.Sprintf("%d-%d", vp.PrintPageRange[i], vp.PrintPageRange[i+1]))
+		}
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "PrintPageRange", strings.Join(ss1, ",")))
+	}
+
+	if vp.NumCopies != nil {
+		ss = append(ss, fmt.Sprintf("%22s%s = %d", "", "NumCopies", *vp.NumCopies))
+	}
+
+	if len(vp.Enforce) > 0 {
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "Enforce", strings.Join(vp.Enforce, ",")))
+	}
+
+	return strings.TrimSpace(strings.Join(ss, "\n"))
+}

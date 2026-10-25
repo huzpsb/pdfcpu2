@@ -1,0 +1,70 @@
+/*
+	Copyright 2020 The pdfcpu Authors.
+
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
+
+		http://www.apache.org/licenses/LICENSE-2.0
+
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/
+
+package api
+
+import (
+	"context"
+	"fmt"
+	"io"
+
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+)
+
+// PDFInfo returns information about rs and supports cancellation.
+// PDFInfo always uses relaxed validation.
+func PDFInfo(c context.Context, rs io.ReadSeeker, fileName string, selectedPages []string, fonts bool, conf *model.Configuration) (info *pdfcpu.PDFInfo, err error) {
+	defer fault.Catch(&err)
+
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
+	if rs == nil {
+		return nil, ErrMissingPDFReadSeeker
+	}
+
+	conf = operationConfiguration(conf, model.LISTINFO)
+	conf.ValidationMode = model.ValidationRelaxed
+
+	ctx, err := ReadAndValidate(c, rs, conf)
+	if err != nil {
+		return nil, fmt.Errorf("info: prepare PDF context: %w", err)
+	}
+
+	if fonts {
+		if err = OptimizeContext(c, ctx); err != nil {
+			return nil, fmt.Errorf("info: optimize context: %w", err)
+		}
+	}
+
+	pages, err := PagesForSelection(ctx.PageCount, selectedPages, false)
+	if err != nil {
+		return nil, fmt.Errorf("info: parse page selection: %w", err)
+	}
+
+	if err := pdfcpu.DetectWatermarks(c, ctx); err != nil {
+		return nil, fmt.Errorf("info: detect watermarks: %w", err)
+	}
+
+	info, err = pdfcpu.Info(c, ctx, fileName, pages, fonts)
+	if err != nil {
+		return nil, fmt.Errorf("info: collect document info: %w", err)
+	}
+	return info, contextutil.Check(c)
+}

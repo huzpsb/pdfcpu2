@@ -1,0 +1,4032 @@
+/*
+	Copyright 2021 The pdfcpu Authors.
+
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
+
+		http://www.apache.org/licenses/LICENSE-2.0
+
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/
+
+package model
+
+import (
+	"bufio"
+	"bytes"
+	"compress/zlib"
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
+	"math"
+	"os"
+	"path"
+	"slices"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
+	"github.com/pdfcpu/pdfcpu/pkg/filter"
+	"github.com/pdfcpu/pdfcpu/pkg/font"
+	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/scan"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+)
+
+// ErrNoContent reports a page without content.
+var ErrNoContent = errors.New("page without content")
+
+// ErrPageNotFound reports a requested page number or page dictionary was not found.
+var ErrPageNotFound = errors.New("page not found")
+
+// ErrMissingEncryptDictObject reports an encryption dictionary reference without a corresponding object.
+var ErrMissingEncryptDictObject = errors.New("missing encryption dictionary object")
+
+// ErrWrongTypeEncryptDictObject reports an encryption dictionary reference resolving to a non-dictionary object.
+var ErrWrongTypeEncryptDictObject = errors.New("wrong type for encryption dictionary object")
+
+var zero int64 = 0
+
+// XRefTableEntry represents an entry in the PDF cross reference table.
+//
+// This may wrap a free object, a compressed object or any in use PDF object:
+//
+// Dict, StreamDict, ObjectStreamDict, PDFXRefStreamDict,
+// Array, Integer, Float, Name, StringLiteral, HexLiteral, Boolean
+type XRefTableEntry struct {
+	Free            bool
+	Offset          *int64
+	Generation      *int
+	Incr            int // TODO
+	RefCount        int
+	Object          types.Object
+	Compressed      bool
+	ObjectStream    *int
+	ObjectStreamInd *int
+	Valid           bool
+	BeingValidated  bool
+}
+
+// NewXRefTableEntryGen0 returns a cross reference table entry for an object with generation 0.
+func NewXRefTableEntryGen0(obj types.Object) *XRefTableEntry {
+	zero := 0
+	return &XRefTableEntry{Generation: &zero, Object: obj}
+}
+
+// NewFreeHeadXRefTableEntry returns the xref table entry for object 0
+// which is per definition the head of the free list (list of free objects).
+func NewFreeHeadXRefTableEntry() *XRefTableEntry {
+	freeHeadGeneration := types.FreeHeadGeneration
+
+	return &XRefTableEntry{
+		Free:       true,
+		Generation: &freeHeadGeneration,
+		Offset:     &zero,
+	}
+}
+
+// Enc wraps around all defined encryption attributes.
+type Enc struct {
+	O, U       []byte
+	OE, UE     []byte
+	Perms      []byte
+	L, P, R, V int
+	Emd        bool // encrypt meta data
+	ID         []byte
+}
+
+// AnnotMap represents annotations by object number of the corresponding annotation dict.
+type AnnotMap map[int]AnnotationRenderer
+
+// Annot contains annotation references and renderers for one annotation type.
+type Annot struct {
+	IndRefs *[]types.IndirectRef
+	Map     AnnotMap
+}
+
+// PgAnnots represents a map of page annotations by type.
+type PgAnnots map[AnnotationType]Annot
+
+// XRefTable represents a PDF cross reference table plus stats for a PDF file.
+type XRefTable struct {
+	Table               map[int]*XRefTableEntry
+	Size                *int               // from trailer dict.
+	MaxObjNr            int                // after reading in all objects from xRef table.
+	PageCount           int                // Number of pages.
+	Root                *types.IndirectRef // Pointer to catalog (reference to root object).
+	RootDict            types.Dict         // Catalog
+	Names               map[string]*Node   // Cache for name trees as found in catalog.
+	Dests               types.Dict         // Named destinations
+	NameRefs            map[string]NameMap // Name refs for merging only
+	Encrypt             *types.IndirectRef // Encrypt dict.
+	E                   *Enc
+	EncKey              []byte // Encrypt key.
+	AES4Strings         bool
+	AES4Streams         bool
+	AES4EmbeddedStreams bool
+
+	// PDF Version
+	HeaderVersion *Version // The PDF version the source is claiming to us as per its header.
+	RootVersion   *Version // Optional PDF version taking precedence over the header version.
+
+	// Document information section
+	ID             types.Array        // from trailer
+	Info           *types.IndirectRef // reference of info dict object
+	DirectInfoDict types.Dict         // direct trailer info dict pending PDF version identification
+	Title          string
+	Subject        string
+	Author         string
+	Creator        string
+	Producer       string
+	CreationDate   string
+	ModDate        string
+	Keywords       string
+	KeywordList    types.StringSet
+	Properties     map[string]string
+	CatalogXMPMeta *XMPMeta
+
+	PageLayout *PageLayout
+	PageMode   *PageMode
+	ViewerPref *ViewerPreferences
+
+	// Linearization section (not yet supported)
+	OffsetPrimaryHintTable  *int64
+	OffsetOverflowHintTable *int64
+	LinearizationObjs       types.IntSet
+
+	// Page annotation cache
+	PageAnnots map[int]PgAnnots
+
+	// Thumbnail images
+	PageThumbs map[int]types.IndirectRef
+
+	Signatures           map[int]map[int]Signature // form signatures and signatures located via page annotations only keyed by increment #.
+	URSignature          types.Dict                // usage rights signature
+	URSignatureIncrement int                       // increment containing the usage rights signature
+	CertifiedSigObjNr    int                       //
+	DSS                  types.Dict                // document security store
+	DTS                  time.Time                 // locally validated document timestamp
+
+	// Offspec section
+	AdditionalStreams *types.Array // array of IndirectRef - trailer :e.g., Oasis "Open Doc"
+
+	// Statistics
+	Stats PDFStats
+
+	Tagged           bool // File is using tags.
+	CustomExtensions bool // File is using custom extensions for annotations and/or keywords.
+
+	// Validation
+	CurPage          int                       // current page during validation
+	Conf             *Configuration            // current command being executed
+	ValidationMode   int                       // see Configuration
+	ValidateLinks    bool                      // check and report external references.
+	Valid            bool                      // true means successful validated against ISO 32000.
+	URIs             map[int]map[string]string // URIs for link checking
+	validationReport *ValidationReport
+
+	Optimized      bool
+	Watermarked    bool
+	Form           types.Dict
+	Outlines       types.Dict
+	SignatureExist bool
+	AppendOnly     bool
+
+	// Fonts
+	UsedGIDs  map[string]map[uint16]bool
+	FillFonts map[string]types.IndirectRef
+}
+
+// NewXRefTable creates a new XRefTable.
+// TODO Export
+func newXRefTable(conf *Configuration) (xRefTable *XRefTable) {
+	return &XRefTable{
+		Table:             map[int]*XRefTableEntry{},
+		Names:             map[string]*Node{},
+		NameRefs:          map[string]NameMap{},
+		KeywordList:       types.StringSet{},
+		Properties:        map[string]string{},
+		LinearizationObjs: types.IntSet{},
+		PageAnnots:        map[int]PgAnnots{},
+		PageThumbs:        map[int]types.IndirectRef{},
+		Signatures:        map[int]map[int]Signature{},
+		Stats:             NewPDFStats(),
+		ValidationMode:    conf.ValidationMode,
+		ValidateLinks:     conf.ValidateLinks,
+		URIs:              map[int]map[string]string{},
+		UsedGIDs:          map[string]map[uint16]bool{},
+		FillFonts:         map[string]types.IndirectRef{},
+		Conf:              conf,
+	}
+}
+
+// FontRepository returns the font repository selected by xRefTable's configuration.
+func (xRefTable *XRefTable) FontRepository() *font.Repository {
+	if xRefTable == nil || xRefTable.Conf == nil {
+		return font.RepositoryForDir(font.UserFontDir)
+	}
+	dir, _ := xRefTable.Conf.UserFontStore()
+	return font.RepositoryForDir(dir)
+}
+
+// Version returns the effective PDF version.
+// A catalog Version entry takes precedence only when it is later than the header version (7.7.2).
+func (xRefTable *XRefTable) Version() Version {
+	if xRefTable.RootVersion != nil && (xRefTable.HeaderVersion == nil || *xRefTable.RootVersion > *xRefTable.HeaderVersion) {
+		return *xRefTable.RootVersion
+	}
+
+	return *xRefTable.HeaderVersion
+}
+
+// PDF20 returns true if the file version is PDF 2.0.
+func (xRefTable *XRefTable) PDF20() bool {
+	return xRefTable.Version() == V20
+}
+
+// VersionString return a string representation for this PDF files PDF version.
+func (xRefTable *XRefTable) VersionString() string {
+	return xRefTable.Version().String()
+}
+
+// ParseRootVersion returns a string representation for an optional Version entry in the root object.
+// This entry overrides the header version.
+// An unresolved catalog reference has no version override.
+func (xRefTable *XRefTable) ParseRootVersion() (v *string, err error) {
+	rootDict, err := xRefTable.catalogDict()
+	if err != nil || rootDict == nil {
+		return nil, err
+	}
+
+	n, _, err := xRefTable.DereferenceNameEntry(rootDict, "Version")
+	if err != nil || n == nil {
+		return nil, err
+	}
+
+	s := n.Value()
+
+	return &s, nil
+}
+
+// ValidateVersion validates against the xRefTable's version.
+func (xRefTable *XRefTable) ValidateVersion(element string, sinceVersion Version) error {
+	actualVersion := xRefTable.Version()
+	if actualVersion < sinceVersion {
+		return &VersionRequirementError{
+			Element:         element,
+			ActualVersion:   actualVersion,
+			RequiredVersion: sinceVersion,
+		}
+	}
+
+	return nil
+}
+
+func (xRefTable *XRefTable) currentCommand() CommandMode {
+	return xRefTable.Conf.Cmd
+}
+
+// IsMerging returns true if the current command is a merge command.
+func (xRefTable *XRefTable) IsMerging() bool {
+	cmd := xRefTable.currentCommand()
+	return cmd == MERGECREATE || cmd == MERGEAPPEND
+}
+
+// EnsureVersionForWriting raises the effective version to at least PDF 1.7.
+// This is necessary to allow validation after adding features not supported
+// by the original version of a document as during watermarking.
+func (xRefTable *XRefTable) EnsureVersionForWriting() {
+	if (xRefTable.HeaderVersion != nil || xRefTable.RootVersion != nil) && xRefTable.Version() >= V17 {
+		return
+	}
+	v := V17
+	xRefTable.RootVersion = &v
+}
+
+// IsLinearizationObject returns true if object #i is a a linearization object.
+func (xRefTable *XRefTable) IsLinearizationObject(i int) bool {
+	return xRefTable.LinearizationObjs[i]
+}
+
+// LinearizationObjsString returns a formatted string and the number of objs.
+func (xRefTable *XRefTable) LinearizationObjsString() (int, string) {
+	var objs []int
+	for k := range xRefTable.LinearizationObjs {
+		if xRefTable.LinearizationObjs[k] {
+			objs = append(objs, k)
+		}
+	}
+	sort.Ints(objs)
+
+	var linObj []string
+	for _, i := range objs {
+		linObj = append(linObj, fmt.Sprintf("%d", i))
+	}
+
+	return len(linObj), strings.Join(linObj, ",")
+}
+
+// Exists returns true if xRefTable contains an entry for objNumber.
+func (xRefTable *XRefTable) Exists(objNr int) bool {
+	_, found := xRefTable.Table[objNr]
+	return found
+}
+
+// Find returns the XRefTable entry for given object number.
+func (xRefTable *XRefTable) Find(objNr int) (*XRefTableEntry, bool) {
+	e, found := xRefTable.Table[objNr]
+	if !found {
+		return nil, false
+	}
+	return e, true
+}
+
+// FindObject returns the object of the XRefTableEntry for a specific object number.
+func (xRefTable *XRefTable) FindObject(objNr int) (types.Object, error) {
+	entry, ok := xRefTable.Find(objNr)
+	if !ok {
+		return nil, fmt.Errorf("findObject: obj#%d not registered in xRefTable", objNr)
+	}
+	return entry.Object, nil
+}
+
+// Free returns the cross ref table entry for given number of a free object.
+func (xRefTable *XRefTable) Free(objNr int) (*XRefTableEntry, error) {
+	entry, found := xRefTable.Find(objNr)
+	if !found {
+		return nil, nil
+	}
+	if !entry.Free {
+		return nil, fmt.Errorf("free: object #%d found, but not free", objNr)
+	}
+	return entry, nil
+}
+
+// NextForFree returns the number of the object the free object with objNumber links to.
+// This is the successor of this free object in the free list.
+func (xRefTable *XRefTable) NextForFree(objNr int) (int, error) {
+	entry, err := xRefTable.Free(objNr)
+	if err != nil {
+		return 0, err
+	}
+
+	return int(*entry.Offset), nil
+}
+
+// FindTableEntryLight returns the XRefTable entry for given object number.
+func (xRefTable *XRefTable) FindTableEntryLight(objNr int) (*XRefTableEntry, bool) {
+	return xRefTable.Find(objNr)
+}
+
+// FindTableEntry returns the XRefTable entry for given object and generation numbers.
+func (xRefTable *XRefTable) FindTableEntry(objNr int, genNr int) (*XRefTableEntry, bool) {
+	if log.TraceEnabled() {
+		log.Trace.Printf("FindTableEntry: obj#:%d gen:%d \n", objNr, genNr)
+	}
+	return xRefTable.Find(objNr)
+}
+
+// FindTableEntryForIndRef returns the XRefTable entry for given indirect reference.
+func (xRefTable *XRefTable) FindTableEntryForIndRef(indRef *types.IndirectRef) (*XRefTableEntry, bool) {
+	if indRef == nil {
+		return nil, false
+	}
+	return xRefTable.FindTableEntry(indRef.ObjectNumber.Value(), indRef.GenerationNumber.Value())
+}
+
+// IncrementRefCount increments the number of references for the object pointed to by indRef.
+func (xRefTable *XRefTable) IncrementRefCount(indRef *types.IndirectRef) {
+	if entry, ok := xRefTable.FindTableEntryForIndRef(indRef); ok {
+		entry.RefCount++
+	}
+}
+
+// InsertNew adds given xRefTableEntry at next new objNumber into the cross reference table.
+// Only to be called once an xRefTable has been generated completely and all trailer dicts have been processed.
+// xRefTable.Size is the size entry of the first trailer dict processed.
+// Called on creation of new object streams.
+// Called by InsertAndUseRecycled.
+func (xRefTable *XRefTable) InsertNew(xRefTableEntry XRefTableEntry) (objNr int) {
+	objNr = *xRefTable.Size
+	xRefTable.Table[objNr] = &xRefTableEntry
+	*xRefTable.Size++
+	return
+}
+
+// InsertAndUseRecycled adds given xRefTableEntry into the cross reference table utilizing the freelist.
+func (xRefTable *XRefTable) InsertAndUseRecycled(xRefTableEntry XRefTableEntry) (objNr int, err error) {
+	// see 7.5.4 Cross-Reference Table
+
+	// Hacky:
+	// Although we increment the obj generation when recycling objects,
+	// we always use generation 0 when reusing recycled objects.
+	// This is because pdfcpu does not reuse objects
+	// in an incremental fashion like laid out in the PDF spec.
+
+	if log.WriteEnabled() {
+		log.Write.Println("InsertAndUseRecycled: begin")
+	}
+
+	// Get Next free object from freelist.
+	freeListHeadEntry, err := xRefTable.Free(0)
+	if err != nil {
+		return 0, err
+	}
+
+	// If none available, add new object & return.
+	if *freeListHeadEntry.Offset == 0 {
+		xRefTableEntry.RefCount = 1
+		objNr = xRefTable.InsertNew(xRefTableEntry)
+		if log.WriteEnabled() {
+			log.Write.Printf("InsertAndUseRecycled: end, new objNr=%d\n", objNr)
+		}
+		return objNr, nil
+	}
+
+	// Recycle free object, update free list & return.
+	objNr = int(*freeListHeadEntry.Offset)
+	entry, found := xRefTable.FindTableEntryLight(objNr)
+	if !found {
+		return 0, fmt.Errorf("insertAndRecycle: no entry for obj #%d", objNr)
+	}
+
+	// The new free list head entry becomes the old head entry's successor.
+	freeListHeadEntry.Offset = entry.Offset
+
+	// The old head entry becomes garbage.
+	entry.Free = false
+	entry.Offset = nil
+
+	// Create a new entry for the recycled object.
+	// TODO use entrys generation.
+	xRefTableEntry.RefCount = 1
+	xRefTable.Table[objNr] = &xRefTableEntry
+
+	if log.WriteEnabled() {
+		log.Write.Printf("InsertAndUseRecycled: end, recycled objNr=%d\n", objNr)
+	}
+
+	return objNr, nil
+}
+
+// InsertObject inserts an object into the xRefTable.
+func (xRefTable *XRefTable) InsertObject(obj types.Object) (objNr int, err error) {
+	xRefTableEntry := NewXRefTableEntryGen0(obj)
+	xRefTableEntry.RefCount = 1
+	return xRefTable.InsertNew(*xRefTableEntry), nil
+}
+
+// IndRefForObject inserts object at objNr into the xRefTable and returns an indirect reference to it.
+func (xRefTable *XRefTable) IndRefForObject(objNr int, obj types.Object) (*types.IndirectRef, error) {
+	xRefTable.Table[objNr] = NewXRefTableEntryGen0(obj)
+	return types.NewIndirectRef(objNr, 0), nil
+}
+
+// IndRefForNewObject inserts an object into the xRefTable and returns an indirect reference to it.
+func (xRefTable *XRefTable) IndRefForNewObject(obj types.Object) (*types.IndirectRef, error) {
+	xRefTableEntry := NewXRefTableEntryGen0(obj)
+	objNr, err := xRefTable.InsertAndUseRecycled(*xRefTableEntry)
+	if err != nil {
+		return nil, err
+	}
+
+	return types.NewIndirectRef(objNr, *xRefTableEntry.Generation), nil
+}
+
+// NewStreamDictForBuf creates a streamDict for buf.
+func (xRefTable *XRefTable) NewStreamDictForBuf(buf []byte) (*types.StreamDict, error) {
+	sd := types.StreamDict{
+		Dict:           types.NewDict(),
+		Content:        buf,
+		FilterPipeline: []types.PDFFilter{{Name: filter.Flate, DecodeParms: nil}},
+	}
+	sd.InsertName("Filter", filter.Flate)
+	return &sd, nil
+}
+
+// NewStreamDictForFile creates a streamDict for filename.
+func (xRefTable *XRefTable) NewStreamDictForFile(filename string) (*types.StreamDict, error) {
+	buf, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	return xRefTable.NewStreamDictForBuf(buf)
+}
+
+func (xRefTable *XRefTable) finalizeEmbeddedStreamDict(
+	sd *types.StreamDict,
+	size int,
+	modDate time.Time,
+) (*types.IndirectRef, error) {
+	sd.InsertName("Type", "EmbeddedFile")
+	d := types.NewDict()
+	d.InsertInt("Size", size)
+	d.Insert("ModDate", types.StringLiteral(types.DateString(modDate)))
+	sd.Insert("Params", d)
+	if err := sd.Encode(); err != nil {
+		return nil, fmt.Errorf("encode stream: %w", err)
+	}
+
+	indRef, err := xRefTable.IndRefForNewObject(*sd)
+	if err != nil {
+		return nil, fmt.Errorf("insert indirect object: %w", err)
+	}
+	return indRef, nil
+}
+
+// NewEmbeddedStreamDict creates and returns an embeddedStreamDict containing the bytes represented by r.
+func (xRefTable *XRefTable) NewEmbeddedStreamDict(r io.Reader, modDate time.Time) (*types.IndirectRef, error) {
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		return nil, fmt.Errorf("copy content: %w", err)
+	}
+
+	bb := buf.Bytes()
+
+	sd, err := xRefTable.NewStreamDictForBuf(bb)
+	if err != nil {
+		return nil, fmt.Errorf("construct stream: %w", err)
+	}
+
+	return xRefTable.finalizeEmbeddedStreamDict(sd, len(bb), modDate)
+}
+
+func (xRefTable *XRefTable) locateObjForIndRef(ir types.IndirectRef) (types.Object, error) {
+	objNr := int(ir.ObjectNumber)
+
+	entry, found := xRefTable.FindTableEntryLight(objNr)
+	if !found {
+		return nil, fmt.Errorf("locateObjForIndRef: no xref entry found for obj #%d", objNr)
+	}
+
+	// Check for multiple indRefs.
+	if entry.RefCount > 1 {
+		entry.RefCount--
+		// By returning nil we signal this object is still in use and can't be deleted.
+		return nil, nil
+	}
+
+	// Since this is the only indRef we can move on and delete the entire object graph.
+	return xRefTable.Dereference(ir)
+}
+
+// FreeObject marks an objects xref table entry as free and inserts it into the free list right after the head.
+func (xRefTable *XRefTable) FreeObject(objNr int) error {
+	// see 7.5.4 Cross-Reference Table
+
+	if log.DebugEnabled() {
+		log.Debug.Printf("FreeObject: begin %d\n", objNr)
+	}
+
+	freeListHeadEntry, err := xRefTable.Free(0)
+	if err != nil {
+		return err
+	}
+	if freeListHeadEntry == nil {
+		return errors.New("freeObject: missing free list head")
+	}
+
+	entry, found := xRefTable.FindTableEntryLight(objNr)
+	if !found {
+		return fmt.Errorf("freeObject: no entry for obj #%d", objNr)
+	}
+
+	if entry.Free {
+		if log.DebugEnabled() {
+			log.Debug.Printf("FreeObject: end %d already free\n", objNr)
+		}
+		return nil
+	}
+
+	*entry.Generation++
+	entry.Free = true
+	entry.Compressed = false
+	entry.Offset = freeListHeadEntry.Offset
+	entry.Object = nil
+	entry.RefCount = 0
+
+	next := int64(objNr)
+	freeListHeadEntry.Offset = &next
+
+	if log.DebugEnabled() {
+		log.Debug.Printf("FreeObject: end %d\n", objNr)
+	}
+
+	return nil
+}
+
+const deleteObjectMarkerKey = "\x00pdfcpuDeleteObject"
+
+type deleteObjectMarker struct{}
+
+func (m *deleteObjectMarker) String() string {
+	return ""
+}
+
+func (m *deleteObjectMarker) Clone() types.Object {
+	return m
+}
+
+func (m *deleteObjectMarker) PDFString() string {
+	return ""
+}
+
+type deleteObjectArrayID struct {
+	first    *types.Object
+	length   int
+	capacity int
+}
+
+type deleteObjectDictRestore struct {
+	dict  types.Dict
+	value types.Object
+	found bool
+}
+
+func (r *deleteObjectDictRestore) apply() {
+	if r.found {
+		r.dict[deleteObjectMarkerKey] = r.value
+		return
+	}
+	delete(r.dict, deleteObjectMarkerKey)
+}
+
+type deleteObjectFrame struct {
+	object     types.Object
+	restore    *deleteObjectDictRestore
+	arrayID    deleteObjectArrayID
+	leaveArray bool
+}
+
+type objectDeletion struct {
+	xRefTable    *XRefTable
+	marker       *deleteObjectMarker
+	processed    map[int]bool
+	activeArrays map[deleteObjectArrayID]bool
+	restores     []*deleteObjectDictRestore
+	stack        []deleteObjectFrame
+}
+
+func (d *objectDeletion) restoreDicts() {
+	for len(d.restores) > 0 {
+		i := len(d.restores) - 1
+		d.restores[i].apply()
+		d.restores = d.restores[:i]
+	}
+}
+
+func (d *objectDeletion) leaveDict(r *deleteObjectDictRestore) {
+	r.apply()
+	d.restores = d.restores[:len(d.restores)-1]
+}
+
+func (d *objectDeletion) pushDict(dict types.Dict) {
+	if len(dict) == 0 {
+		return
+	}
+	if marker, ok := dict[deleteObjectMarkerKey].(*deleteObjectMarker); ok && marker == d.marker {
+		return
+	}
+
+	value, found := dict[deleteObjectMarkerKey]
+	dict[deleteObjectMarkerKey] = d.marker
+	restore := &deleteObjectDictRestore{dict: dict, value: value, found: found}
+	d.restores = append(d.restores, restore)
+	d.stack = append(d.stack, deleteObjectFrame{restore: restore})
+	for key, o := range dict {
+		if key == deleteObjectMarkerKey {
+			continue
+		}
+		d.stack = append(d.stack, deleteObjectFrame{object: o})
+	}
+	if found {
+		d.stack = append(d.stack, deleteObjectFrame{object: value})
+	}
+}
+
+func (d *objectDeletion) pushArray(a types.Array) {
+	if len(a) == 0 {
+		return
+	}
+	id := deleteObjectArrayID{first: &a[0], length: len(a), capacity: cap(a)}
+	if d.activeArrays[id] {
+		return
+	}
+
+	d.activeArrays[id] = true
+	d.stack = append(d.stack, deleteObjectFrame{arrayID: id, leaveArray: true})
+	for i := len(a) - 1; i >= 0; i-- {
+		d.stack = append(d.stack, deleteObjectFrame{object: a[i]})
+	}
+}
+
+func (d *objectDeletion) delete(o types.Object) error {
+	if ir, ok := o.(types.IndirectRef); ok {
+		objNr := ir.ObjectNumber.Value()
+		if d.processed[objNr] {
+			return nil
+		}
+		var err error
+		o, err = d.xRefTable.locateObjForIndRef(ir)
+		if err != nil || o == nil {
+			return err
+		}
+		if err = d.xRefTable.FreeObject(objNr); err != nil {
+			return err
+		}
+		d.processed[objNr] = true
+	}
+
+	switch o := o.(type) {
+	case types.Dict:
+		d.pushDict(o)
+	case types.StreamDict:
+		d.pushDict(o.Dict)
+	case types.Array:
+		d.pushArray(o)
+	}
+	return nil
+}
+
+func (d *objectDeletion) run(c context.Context, o types.Object) error {
+	d.stack = append(d.stack, deleteObjectFrame{object: o})
+	defer d.restoreDicts()
+	for len(d.stack) > 0 {
+		i := len(d.stack) - 1
+		f := d.stack[i]
+		d.stack = d.stack[:i]
+		if f.restore != nil {
+			d.leaveDict(f.restore)
+			continue
+		}
+		if f.leaveArray {
+			delete(d.activeArrays, f.arrayID)
+			continue
+		}
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if err := d.delete(f.object); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteObject removes o and its reachable objects, stopping when c is canceled.
+// Cancellation may leave the in-memory object graph partially deleted.
+func (xRefTable *XRefTable) DeleteObject(c context.Context, o types.Object) error {
+	d := objectDeletion{
+		xRefTable:    xRefTable,
+		marker:       &deleteObjectMarker{},
+		processed:    map[int]bool{},
+		activeArrays: map[deleteObjectArrayID]bool{},
+	}
+	return d.run(c, o)
+}
+
+// DeleteObjectGraph deletes all objects reachable by an indirect reference o and supports cancellation.
+func (xRefTable *XRefTable) DeleteObjectGraph(c context.Context, o types.Object) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if log.DebugEnabled() {
+		log.Debug.Println("DeleteObjectGraph: begin")
+	}
+
+	indRef, ok := o.(types.IndirectRef)
+	if !ok {
+		return nil
+	}
+
+	// Delete ObjectGraph for object indRef.ObjectNumber.Value() via recursion.
+	if err := xRefTable.DeleteObject(c, indRef); err != nil {
+		return err
+	}
+
+	if log.DebugEnabled() {
+		log.Debug.Println("DeleteObjectGraph: end")
+	}
+
+	return nil
+}
+
+// NewEmbeddedFileStreamDict returns an embeddedFileStreamDict containing the file "filename".
+func (xRefTable *XRefTable) NewEmbeddedFileStreamDict(filename string) (*types.IndirectRef, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	return xRefTable.NewEmbeddedStreamDict(f, fi.ModTime())
+}
+
+// NewSoundStreamDict returns a new sound stream dict.
+func (xRefTable *XRefTable) NewSoundStreamDict(filename string, samplingRate int, fileSpecDict types.Dict) (*types.IndirectRef, error) {
+	sd, err := xRefTable.NewStreamDictForFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	sd.InsertName("Type", "Sound")
+	sd.InsertInt("R", samplingRate)
+	sd.InsertInt("C", 2)
+	sd.InsertInt("B", 8)
+	sd.InsertName("E", "Signed")
+	if fileSpecDict != nil {
+		sd.Insert("F", fileSpecDict)
+	} else {
+		sd.Insert("F", types.StringLiteral(path.Base(filename)))
+	}
+
+	if err = sd.Encode(); err != nil {
+		return nil, err
+	}
+
+	return xRefTable.IndRefForNewObject(*sd)
+}
+
+// NewFileSpecDict creates and returns a new fileSpec dictionary.
+func (xRefTable *XRefTable) NewFileSpecDict(f, uf, desc string, indRefStreamDict types.IndirectRef) (types.Dict, error) {
+	d := types.NewDict()
+	d.InsertName("Type", "Filespec")
+
+	s, err := types.EscapedUTF16String(f)
+	if err != nil {
+		return nil, fmt.Errorf("file spec F: encode text: %w", err)
+	}
+	d.InsertString("F", *s)
+
+	if s, err = types.EscapedUTF16String(uf); err != nil {
+		return nil, fmt.Errorf("file spec UF: encode text: %w", err)
+	}
+	d.InsertString("UF", *s)
+
+	efDict := types.NewDict()
+	efDict.Insert("F", indRefStreamDict)
+	efDict.Insert("UF", indRefStreamDict)
+	d.Insert("EF", efDict)
+
+	if desc != "" {
+		if s, err = types.EscapedUTF16String(desc); err != nil {
+			return nil, fmt.Errorf("file spec Desc: encode text: %w", err)
+		}
+		d.InsertString("Desc", *s)
+	}
+
+	// CI, optional, collection item dict, since V1.7
+	// a corresponding collection schema dict in a collection.
+	ciDict := types.NewDict()
+	//add contextual meta info here.
+	d.Insert("CI", ciDict)
+
+	return d, nil
+}
+
+func (xRefTable *XRefTable) freeObjects() types.IntSet {
+	m := types.IntSet{}
+
+	for k, v := range xRefTable.Table {
+		if v != nil && v.Free && k > 0 {
+			m[k] = true
+		}
+	}
+
+	return m
+}
+
+func lowestKey(m types.IntSet) int {
+	min := -1
+	for k := range m {
+		if min < 0 || k < min {
+			min = k
+		}
+	}
+	return min
+}
+
+func (xRefTable *XRefTable) handleDanglingFree(m types.IntSet, head *XRefTableEntry) error {
+	for _, i := range slices.Sorted(maps.Keys(m)) {
+
+		entry, found := xRefTable.FindTableEntryLight(i)
+		if !found {
+			return fmt.Errorf("handleDanglingFree: no xref entry found for obj #%d", i)
+		}
+
+		if !entry.Free {
+			return fmt.Errorf("handleDanglingFree: xref entry is not free for obj #%d", i)
+		}
+
+		if *entry.Generation == types.FreeHeadGeneration {
+			entry.Offset = &zero
+			continue
+		}
+
+		entry.Offset = head.Offset
+		next := int64(i)
+		head.Offset = &next
+	}
+	return nil
+}
+
+func (xRefTable *XRefTable) validateFreeList(f int, m types.IntSet, e *XRefTableEntry) (*XRefTableEntry, int, error) {
+	var lastValid *XRefTableEntry
+	var nextFree int
+
+	for f != 0 {
+		if log.TraceEnabled() {
+			log.Trace.Printf("EnsureValidFreeList: validating obj #%d %v\n", f, m)
+		}
+		// verify if obj f is one of the free objects recorded.
+		if !m[f] {
+			if len(m) > 0 && lastValid == nil {
+				lastValid = e
+				f = lowestKey(m)
+				nextFree = f
+				continue
+			}
+			// Repair last entry.
+			*e.Offset = 0
+			break
+		}
+
+		delete(m, f)
+
+		var err error
+		if e, err = xRefTable.Free(f); err != nil {
+			return nil, 0, err
+		}
+		if e == nil {
+			return nil, 0, fmt.Errorf("ensureValidFreeList: no xref entry found for obj #%d", f)
+		}
+
+		f = int(*e.Offset)
+	}
+
+	return lastValid, nextFree, nil
+}
+
+// EnsureValidFreeList ensures the integrity of the free list associated with the recorded free objects.
+// See 7.5.4 Cross-Reference Table
+func (xRefTable *XRefTable) EnsureValidFreeList() error {
+	if log.TraceEnabled() {
+		log.Trace.Println("EnsureValidFreeList: begin")
+	}
+
+	m := xRefTable.freeObjects()
+
+	// Verify free object 0 as free list head.
+	head, _ := xRefTable.Find(0)
+	if head == nil {
+		g0 := types.FreeHeadGeneration
+		head = &XRefTableEntry{Free: true, Offset: &zero, Generation: &g0}
+		xRefTable.Table[0] = head
+	}
+
+	// verify generation of 56535
+	if *head.Generation != types.FreeHeadGeneration {
+		// Fix generation for obj 0.
+		*head.Generation = types.FreeHeadGeneration
+	}
+
+	if len(m) == 0 {
+
+		// no free object other than 0.
+
+		// repair if necessary
+		if *head.Offset != 0 {
+			*head.Offset = 0
+		}
+
+		if log.TraceEnabled() {
+			log.Trace.Println("EnsureValidFreeList: empty free list.")
+		}
+		return nil
+	}
+
+	e := head
+	f := int(*e.Offset)
+
+	lastValid, nextFree, err := xRefTable.validateFreeList(f, m, e)
+	if err != nil {
+		return err
+	}
+
+	if lastValid != nil {
+		*lastValid.Offset = int64(nextFree)
+	}
+
+	if len(m) == 0 {
+		if log.TraceEnabled() {
+			log.Trace.Println("EnsureValidFreeList: end, regular linked list")
+		}
+		return nil
+	}
+
+	// insert remaining free objects into verified linked list
+	// unless they are forever deleted with generation 65535.
+	// In that case they have to point to obj 0.
+	err = xRefTable.handleDanglingFree(m, head)
+
+	if log.TraceEnabled() {
+		log.Trace.Println("EnsureValidFreeList: end")
+	}
+
+	return err
+}
+
+// DeleteDictEntry deletes key from d and removes the referenced object graph.
+func (xRefTable *XRefTable) DeleteDictEntry(c context.Context, d types.Dict, key string) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	o, found := d.Find(key)
+	if !found {
+		return nil
+	}
+	if err := xRefTable.DeleteObject(c, o); err != nil {
+		return err
+	}
+	d.Delete(key)
+	return nil
+}
+
+// UndeleteObject ensures an object is not recorded in the free list.
+// e.g. sometimes caused by indirect references to free objects in the original PDF file.
+func (xRefTable *XRefTable) UndeleteObject(objectNumber int) error {
+	if log.DebugEnabled() {
+		log.Debug.Printf("UndeleteObject: begin %d\n", objectNumber)
+	}
+
+	f, err := xRefTable.Free(0)
+	if err != nil {
+		return err
+	}
+
+	// until we have found the last free object which should point to obj 0.
+	for *f.Offset != 0 {
+		objNr := int(*f.Offset)
+
+		entry, err := xRefTable.Free(objNr)
+		if err != nil {
+			return err
+		}
+
+		if objNr == objectNumber {
+			if log.DebugEnabled() {
+				log.Debug.Printf("UndeleteObject end: undeleting obj#%d\n", objectNumber)
+			}
+			*f.Offset = *entry.Offset
+			entry.Offset = nil
+			if *entry.Generation > 0 {
+				*entry.Generation--
+			}
+			entry.Free = false
+			return nil
+		}
+
+		f = entry
+	}
+
+	if log.DebugEnabled() {
+		log.Debug.Printf("UndeleteObject: end: obj#%d not in free list.\n", objectNumber)
+	}
+
+	return nil
+}
+
+func validateObjNrAndGenNr(objNr, genNr int) error {
+	if objNr < 0 {
+		return fmt.Errorf("invalid negative object number %d", objNr)
+	}
+	if genNr < 0 {
+		return fmt.Errorf("invalid negative generation number %d for obj#%d", genNr, objNr)
+	}
+	return nil
+}
+
+// IsObjValid returns true if the object with objNr and genNr is valid.
+func (xRefTable *XRefTable) IsObjValid(objNr, genNr int) (bool, error) {
+	if err := validateObjNrAndGenNr(objNr, genNr); err != nil {
+		return false, err
+	}
+	entry, found := xRefTable.FindTableEntry(objNr, genNr)
+	if !found {
+		return false, fmt.Errorf("missing xref entry for obj#%d gen#%d", objNr, genNr)
+	}
+	if entry.Free {
+		return false, fmt.Errorf("unexpected free xref entry for obj#%d gen#%d", objNr, genNr)
+	}
+	return entry.Valid, nil
+}
+
+// IsValid returns true if the object referenced by ir is valid.
+func (xRefTable *XRefTable) IsValid(ir types.IndirectRef) (bool, error) {
+	objNr := ir.ObjectNumber.Value()
+	genNr := ir.GenerationNumber.Value()
+	if err := validateObjNrAndGenNr(objNr, genNr); err != nil {
+		return false, fmt.Errorf("invalid indirect reference %d %d R: %w", objNr, genNr, err)
+	}
+	return xRefTable.IsObjValid(objNr, genNr)
+}
+
+// IsObjBeingValidated returns true if the object with objNr and genNr is being validated.
+func (xRefTable *XRefTable) IsObjBeingValidated(objNr, genNr int) (bool, error) {
+	entry, found := xRefTable.FindTableEntry(objNr, genNr)
+	if !found {
+		return false, fmt.Errorf("isObjBeingValidated: no entry for obj#%d", objNr)
+	}
+	if entry.Free {
+		return false, fmt.Errorf("isObjBeingValidated: unexpected free entry for obj#%d", objNr)
+	}
+	return entry.BeingValidated, nil
+}
+
+// IsBeingValidated returns true if the object referenced by ir is being validated.
+func (xRefTable *XRefTable) IsBeingValidated(ir types.IndirectRef) (bool, error) {
+	return xRefTable.IsObjBeingValidated(ir.ObjectNumber.Value(), ir.GenerationNumber.Value())
+}
+
+// SetValid marks the xreftable entry of the object referenced by ir as valid.
+func (xRefTable *XRefTable) SetValid(ir types.IndirectRef) error {
+	entry, found := xRefTable.FindTableEntry(ir.ObjectNumber.Value(), ir.GenerationNumber.Value())
+	if !found {
+		return fmt.Errorf("setValid: no entry for obj#%d", ir.ObjectNumber.Value())
+	}
+	if entry.Free {
+		return fmt.Errorf("setValid: unexpected free entry for obj#%d", ir.ObjectNumber.Value())
+	}
+	entry.Valid = true
+	entry.BeingValidated = false
+
+	return nil
+}
+
+// SetBeingValidated marks the xreftable entry of the object referenced by ir as being validated.
+func (xRefTable *XRefTable) SetBeingValidated(ir types.IndirectRef) error {
+	entry, found := xRefTable.FindTableEntry(ir.ObjectNumber.Value(), ir.GenerationNumber.Value())
+	if !found {
+		return fmt.Errorf("setBeingValidated: no entry for obj#%d", ir.ObjectNumber.Value())
+	}
+	if entry.Free {
+		return fmt.Errorf("setBeingValidated: unexpected free entry for obj#%d", ir.ObjectNumber.Value())
+	}
+	entry.BeingValidated = true
+	entry.Valid = false
+
+	return nil
+}
+
+// DereferenceStreamDict resolves a stream dictionary object.
+func (xRefTable *XRefTable) DereferenceStreamDict(o types.Object) (*types.StreamDict, bool, error) {
+	// TODO Check if we still need the bool return value
+	indRef, ok := o.(types.IndirectRef)
+	if !ok {
+		sd, ok := o.(types.StreamDict)
+		if !ok {
+			return nil, false, fmt.Errorf("dereferenceStreamDict: wrong type <%v> %T", o, o)
+		}
+		return &sd, false, nil
+	}
+
+	// 7.3.10
+	// An indirect reference to an undefined object shall not be considered an error by a conforming reader;
+	// it shall be treated as a reference to the null object.
+	entry, found := xRefTable.FindTableEntry(indRef.ObjectNumber.Value(), indRef.GenerationNumber.Value())
+	if !found || entry.Object == nil || entry.Free {
+		return nil, false, nil
+	}
+	ev := entry.Valid
+	if !entry.Valid {
+		entry.Valid = true
+	}
+	sd, ok := entry.Object.(types.StreamDict)
+	if !ok {
+		return nil, false, fmt.Errorf("dereferenceStreamDict: wrong type <%v> %T", o, entry.Object)
+	}
+
+	return &sd, ev, nil
+}
+
+// DereferenceXObjectDict resolves an XObject.
+func (xRefTable *XRefTable) DereferenceXObjectDict(indRef types.IndirectRef) (*types.StreamDict, error) {
+	sd, _, err := xRefTable.DereferenceStreamDict(indRef)
+	if err != nil {
+		return nil, err
+	}
+	if sd == nil {
+		return nil, nil
+	}
+
+	subType, _, err := xRefTable.DereferenceNameEntry(sd.Dict, "Subtype")
+	if err != nil {
+		return nil, fmt.Errorf("dereferenceXObjectDict: stream dict Subtype %s: %w", indRef, err)
+	}
+	if subType == nil || len(subType.Value()) == 0 {
+		if xRefTable.ValidationMode == ValidationRelaxed {
+			return sd, nil
+		}
+		return nil, fmt.Errorf("dereferenceXObjectDict: missing stream dict Subtype %s", indRef)
+	}
+
+	if subType.Value() != "Image" && subType.Value() != "Form" {
+		return nil, fmt.Errorf("dereferenceXObjectDict: unexpected stream dict Subtype %s", subType.Value())
+	}
+
+	return sd, nil
+}
+
+// Catalog returns the document catalog dictionary, which is non-nil on success.
+func (xRefTable *XRefTable) Catalog() (types.Dict, error) {
+	d, err := xRefTable.catalogDict()
+	if err != nil {
+		return nil, err
+	}
+	if d == nil {
+		return nil, errors.New("missing root dict")
+	}
+	return d, nil
+}
+
+// catalogDict resolves the catalog while preserving PDF null semantics for optional metadata lookup.
+func (xRefTable *XRefTable) catalogDict() (types.Dict, error) {
+	if xRefTable.RootDict != nil {
+		return xRefTable.RootDict, nil
+	}
+
+	if xRefTable.Root == nil {
+		return nil, errors.New("missing root dict")
+	}
+
+	o, _, err := xRefTable.indRefToObject(xRefTable.Root, true)
+	if err != nil || o == nil {
+		return nil, err
+	}
+
+	d, ok := o.(types.Dict)
+	if !ok {
+		return nil, errors.New("corrupt root dict")
+	}
+
+	xRefTable.RootDict = d
+
+	return xRefTable.RootDict, nil
+}
+
+// EncryptDict dereferences and returns the document encryption dictionary.
+func (xRefTable *XRefTable) EncryptDict() (types.Dict, error) {
+	if xRefTable.Encrypt == nil {
+		return nil, ErrMissingEncryptDictObject
+	}
+
+	o, _, err := xRefTable.indRefToObject(xRefTable.Encrypt, true)
+	if err != nil {
+		return nil, err
+	}
+	if o == nil {
+		return nil, ErrMissingEncryptDictObject
+	}
+
+	d, ok := o.(types.Dict)
+	if !ok {
+		return nil, fmt.Errorf("%w: %T", ErrWrongTypeEncryptDictObject, o)
+	}
+
+	return d, nil
+}
+
+// CatalogHasPieceInfo returns true if the root has an entry for \"PieceInfo\".
+func (xRefTable *XRefTable) CatalogHasPieceInfo() (bool, error) {
+	rootDict, err := xRefTable.Catalog()
+	if err != nil {
+		return false, err
+	}
+	obj, hasPieceInfo := rootDict.Find("PieceInfo")
+	return hasPieceInfo && obj != nil, nil
+}
+
+// Pages returns the Pages reference contained in the catalog, which is non-nil on success.
+func (xRefTable *XRefTable) Pages() (*types.IndirectRef, error) {
+	rootDict, err := xRefTable.Catalog()
+	if err != nil {
+		return nil, err
+	}
+	o, found := rootDict.Find("Pages")
+	if !found {
+		return nil, errors.New("missing pages root")
+	}
+	ir, ok := o.(types.IndirectRef)
+	if !ok {
+		return nil, errors.New("corrupt pages root")
+	}
+	return &ir, nil
+}
+
+// MissingObjects returns the number of objects that were not written
+// plus the corresponding comma separated string representation.
+func (xRefTable *XRefTable) MissingObjects() (int, *string) {
+	var missing []string
+
+	for i := 0; i < *xRefTable.Size; i++ {
+		if !xRefTable.Exists(i) {
+			missing = append(missing, fmt.Sprintf("%d", i))
+		}
+	}
+
+	var s *string
+
+	if len(missing) > 0 {
+		joined := strings.Join(missing, ",")
+		s = &joined
+	}
+
+	return len(missing), s
+}
+
+func (xRefTable *XRefTable) sortedKeys() []int {
+	var keys []int
+	for k := range xRefTable.Table {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	return keys
+}
+
+func objStr(entry *XRefTableEntry, objNr int) string {
+	typeStr := fmt.Sprintf("%T", entry.Object)
+
+	d, ok := entry.Object.(types.Dict)
+	if ok {
+		if d.Type() != nil {
+			typeStr += fmt.Sprintf(" type=%s", *d.Type())
+		}
+		if d.Subtype() != nil {
+			typeStr += fmt.Sprintf(" subType=%s", *d.Subtype())
+		}
+	}
+
+	if entry.ObjectStream != nil {
+		// was compressed, offset is nil.
+		return fmt.Sprintf("%5d: was compressed %d[%d] generation=%d %s \n%s\n", objNr, *entry.ObjectStream, *entry.ObjectStreamInd, *entry.Generation, typeStr, entry.Object)
+	}
+
+	// regular in use object with offset.
+	if entry.Offset != nil {
+		return fmt.Sprintf("%5d:   offset=%8d generation=%d %s \n%s\n", objNr, *entry.Offset, *entry.Generation, typeStr, entry.Object)
+	}
+
+	return fmt.Sprintf("%5d:   offset=nil generation=%d %s \n%s\n", objNr, *entry.Generation, typeStr, entry.Object)
+}
+
+func (xRefTable *XRefTable) dumpDecodedStream(c context.Context, sd types.StreamDict, objNr, mode int) (string, error) {
+	err := xRefTable.DecodeStream(&sd)
+	if ctxErr := c.Err(); ctxErr != nil {
+		return "", ctxErr
+	}
+	if errors.Is(err, filter.ErrDecodeLimitExceeded) {
+		return "", fmt.Errorf("dump object %d: decode stream: %w", objNr, err)
+	}
+	if err == filter.ErrUnsupportedFilter {
+		return "stream filter unsupported!", nil
+	}
+	if err != nil {
+		return "decoding problem encountered!", nil
+	}
+
+	s := "decoded stream content (length = %d)\n%s\n"
+	s1 := ""
+	switch mode {
+	case 1:
+		sc := bufio.NewScanner(bytes.NewReader(sd.Content))
+		sc.Split(scan.Lines)
+		for sc.Scan() {
+			if err := c.Err(); err != nil {
+				return "", err
+			}
+			s1 += sc.Text() + "\n"
+		}
+		if err := sc.Err(); err != nil {
+			return "", fmt.Errorf("dump object %d: scan decoded stream: %w", objNr, err)
+		}
+	case 2:
+		s1 = hex.Dump(sd.Content)
+	}
+
+	return fmt.Sprintf(s, len(sd.Content), s1), nil
+}
+
+// DumpObject writes object objNr to stdout using mode for stream output formatting and supports cancellation.
+func (xRefTable *XRefTable) DumpObject(c context.Context, objNr, mode int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	// mode
+	//  0 .. silent / obj only
+	//  1 .. ascii
+	//  2 .. hex
+	entry := xRefTable.Table[objNr]
+	if entry == nil || entry.Free || entry.Compressed || entry.Object == nil {
+		if err := c.Err(); err != nil {
+			return err
+		}
+		fmt.Println(":(")
+		return nil
+	}
+
+	str := objStr(entry, objNr)
+
+	if mode > 0 {
+		if sd, ok := entry.Object.(types.StreamDict); ok {
+			s, err := xRefTable.dumpDecodedStream(c, sd, objNr, mode)
+			if err != nil {
+				return err
+			}
+			str += s
+		}
+
+		if osd, ok := entry.Object.(types.ObjectStreamDict); ok {
+			str += fmt.Sprintf("object stream count:%d size of objectarray:%d\n", osd.ObjCount, len(osd.ObjArray))
+		}
+	}
+
+	if err := c.Err(); err != nil {
+		return err
+	}
+	fmt.Println(str)
+	return nil
+}
+
+func (xRefTable *XRefTable) list(logStr []string) []string {
+	// Print list of XRefTable entries to logString.
+	for _, k := range xRefTable.sortedKeys() {
+
+		entry := xRefTable.Table[k]
+
+		var str string
+
+		if entry.Free {
+			str = fmt.Sprintf("%5d: f   next=%8d generation=%d\n", k, *entry.Offset, *entry.Generation)
+		} else if entry.Compressed {
+			str = fmt.Sprintf("%5d: c => obj:%d[%d] generation=%d \n%s\n", k, *entry.ObjectStream, *entry.ObjectStreamInd, *entry.Generation, entry.Object)
+		} else {
+			if entry.Object != nil {
+
+				typeStr := fmt.Sprintf("%T", entry.Object)
+
+				d, ok := entry.Object.(types.Dict)
+
+				if ok {
+					// Diagnostic output shows the raw dictionary and must remain usable for a damaged xref table.
+					if d.Type() != nil {
+						typeStr += fmt.Sprintf(" type=%s", *d.Type())
+					}
+					if d.Subtype() != nil {
+						typeStr += fmt.Sprintf(" subType=%s", *d.Subtype())
+					}
+				}
+
+				if entry.ObjectStream != nil {
+					// was compressed, offset is nil.
+					str = fmt.Sprintf("%5d: was compressed %d[%d] generation=%d %s \n%s\n",
+						k, *entry.ObjectStream, *entry.ObjectStreamInd, *entry.Generation, typeStr, entry.Object)
+				} else {
+					// regular in use object with offset.
+					if entry.Offset != nil {
+						str = fmt.Sprintf("%5d:   offset=%8d generation=%d %s \n%s\n",
+							k, *entry.Offset, *entry.Generation, typeStr, entry.Object)
+					} else {
+						str = fmt.Sprintf("%5d:   offset=nil generation=%d %s \n%s\n",
+							k, *entry.Generation, typeStr, entry.Object)
+					}
+
+				}
+
+				sd, ok := entry.Object.(types.StreamDict)
+				if ok && log.TraceEnabled() {
+					s := "decoded stream content (length = %d)\n%s\n"
+					if sd.IsPageContent {
+						str += fmt.Sprintf(s, len(sd.Content), sd.Content)
+					} else {
+						str += fmt.Sprintf(s, len(sd.Content), hex.Dump(sd.Content))
+					}
+				}
+
+				osd, ok := entry.Object.(types.ObjectStreamDict)
+				if ok {
+					str += fmt.Sprintf("object stream count:%d size of objectarray:%d\n", osd.ObjCount, len(osd.ObjArray))
+				}
+
+			} else {
+				if entry.Offset == nil {
+					str = fmt.Sprintf("%5d:   offset=    none generation=%d nil\n", k, *entry.Generation)
+				} else {
+					str = fmt.Sprintf("%5d:   offset=%8d generation=%d nil\n", k, *entry.Offset, *entry.Generation)
+				}
+			}
+		}
+
+		logStr = append(logStr, str)
+	}
+
+	return logStr
+}
+
+// Dump the free list to logStr.
+// At this point the free list is assumed to be a linked list with its last node linked to the beginning.
+func (xRefTable *XRefTable) freeList(logStr []string) ([]string, error) {
+	if log.TraceEnabled() {
+		log.Trace.Printf("freeList begin")
+	}
+
+	head, err := xRefTable.Free(0)
+	if err != nil {
+		return nil, err
+	}
+
+	if *head.Offset == 0 {
+		return append(logStr, "\nEmpty free list.\n"), nil
+	}
+
+	f := int(*head.Offset)
+
+	logStr = append(logStr, "\nfree list:\n  obj  next  generation\n")
+	logStr = append(logStr, fmt.Sprintf("%5d %5d %5d\n", 0, f, types.FreeHeadGeneration))
+
+	for f != 0 {
+		if log.TraceEnabled() {
+			log.Trace.Printf("freeList validating free object %d\n", f)
+		}
+
+		entry, err := xRefTable.Free(f)
+		if err != nil {
+			return nil, err
+		}
+
+		next := int(*entry.Offset)
+		generation := *entry.Generation
+		s := fmt.Sprintf("%5d %5d %5d\n", f, next, generation)
+		logStr = append(logStr, s)
+		if log.TraceEnabled() {
+			log.Trace.Printf("freeList: %s", s)
+		}
+
+		f = next
+	}
+
+	if log.TraceEnabled() {
+		log.Trace.Printf("freeList end")
+	}
+
+	return logStr, nil
+}
+
+type nameTreeFrame struct {
+	n       *Node
+	root    bool
+	visited bool
+}
+
+func appendNameTreeChildFrames(stack []nameTreeFrame, n *Node) []nameTreeFrame {
+	for i := len(n.Kids) - 1; i >= 0; i-- {
+		stack = append(stack, nameTreeFrame{n: n.Kids[i]})
+	}
+	return stack
+}
+
+func (xRefTable *XRefTable) bindNameTreeNodeDict(name string, n *Node, root bool) (types.Dict, error) {
+	if n.D == nil {
+		n.D = types.NewDict()
+		return n.D, nil
+	}
+
+	if root {
+		namesDict, err := xRefTable.NamesDict()
+		if err != nil {
+			return nil, err
+		}
+		if namesDict == nil {
+			return nil, errors.New("root entry \"Names\" corrupt")
+		}
+		namesDict.Update(name, n.D)
+	}
+	if log.DebugEnabled() {
+		log.Debug.Printf("bind dict = %v\n", n.D)
+	}
+	return n.D, nil
+}
+
+func bindNameTreeNodeLimits(dict types.Dict, n *Node, root bool) {
+	if !root {
+		lo, hi := n.rawLimits()
+		dict.Update("Limits", types.NewHexLiteralArray(lo, hi))
+		return
+	}
+	dict.Delete("Limits")
+}
+
+func bindNameTreeLeafNode(dict types.Dict, n *Node) {
+	a := types.Array{}
+	for _, e := range n.Names {
+		a = append(a, types.NewHexLiteral([]byte(e.key())))
+		a = append(a, e.v)
+	}
+	dict.Update("Names", a)
+	if log.DebugEnabled() {
+		log.Debug.Printf("bound nametree node(leaf): %s/n", dict)
+	}
+}
+
+func (xRefTable *XRefTable) bindNameTreeIntermediateNode(dict types.Dict, n *Node) error {
+	kids := types.Array{}
+	for i, k := range n.Kids {
+		indRef, err := xRefTable.IndRefForNewObject(k.D)
+		if err != nil {
+			return fmt.Errorf("child object %d: insert: %w", i, err)
+		}
+		kids = append(kids, *indRef)
+	}
+
+	dict.Update("Kids", kids)
+	dict.Delete("Names")
+
+	if log.DebugEnabled() {
+		log.Debug.Printf("bound nametree node(intermediary): %s/n", dict)
+	}
+	return nil
+}
+
+func (xRefTable *XRefTable) bindNameTreeNodeFrame(name string, f nameTreeFrame) error {
+	dict, err := xRefTable.bindNameTreeNodeDict(name, f.n, f.root)
+	if err != nil {
+		if f.root {
+			return fmt.Errorf("root dictionary: %w", err)
+		}
+		return fmt.Errorf("node dictionary: %w", err)
+	}
+
+	bindNameTreeNodeLimits(dict, f.n, f.root)
+
+	if f.n.leaf() {
+		bindNameTreeLeafNode(dict, f.n)
+		return nil
+	}
+
+	if err := xRefTable.bindNameTreeIntermediateNode(dict, f.n); err != nil {
+		return fmt.Errorf("intermediate node: %w", err)
+	}
+	return nil
+}
+
+func (xRefTable *XRefTable) bindNameTreeNode(name string, n *Node, root bool) error {
+	stack := []nameTreeFrame{{n: n, root: root}}
+	for len(stack) > 0 {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if f.n == nil {
+			continue
+		}
+
+		if !f.visited && !f.n.leaf() {
+			stack = append(stack, nameTreeFrame{n: f.n, root: f.root, visited: true})
+			stack = appendNameTreeChildFrames(stack, f.n)
+			continue
+		}
+
+		if err := xRefTable.bindNameTreeNodeFrame(name, f); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// BindNameTrees syncs up the internal name tree cache with the xreftable.
+func (xRefTable *XRefTable) BindNameTrees() error {
+	if log.WriteEnabled() {
+		log.Write.Println("BindNameTrees..")
+	}
+
+	// Iterate over internal name tree rep.
+	for k, v := range xRefTable.Names {
+		if log.WriteEnabled() {
+			log.Write.Printf("bindNameTree: %s\n", k)
+		}
+		if err := xRefTable.bindNameTreeNode(k, v, true); err != nil {
+			return fmt.Errorf("name tree %q: %w", k, err)
+		}
+	}
+
+	return nil
+}
+
+// LocateNameTree locates/ensures a specific name tree.
+func (xRefTable *XRefTable) LocateNameTree(nameTreeName string, ensure bool) error {
+	if xRefTable.Names[nameTreeName] != nil {
+		return nil
+	}
+
+	d, err := xRefTable.Catalog()
+	if err != nil {
+		return fmt.Errorf("name tree %q: catalog: %w", nameTreeName, err)
+	}
+	if d == nil {
+		return fmt.Errorf("name tree %q: catalog: missing dictionary", nameTreeName)
+	}
+
+	o, found := d.Find("Names")
+	if !found {
+		if !ensure {
+			return nil
+		}
+		dict := types.NewDict()
+
+		indRef, err := xRefTable.IndRefForNewObject(dict)
+		if err != nil {
+			return fmt.Errorf("name tree %q: create Names dictionary: %w", nameTreeName, err)
+		}
+		d.Insert("Names", *indRef)
+
+		d = dict
+	} else {
+		d, err = xRefTable.DereferenceDict(o)
+		if err != nil {
+			return fmt.Errorf("name tree %q: dereference Names dictionary: %w", nameTreeName, err)
+		}
+		if d == nil {
+			return fmt.Errorf("name tree %q: dereference Names dictionary: missing dictionary", nameTreeName)
+		}
+	}
+
+	o, found = d.Find(nameTreeName)
+	if !found {
+		if !ensure {
+			return nil
+		}
+		dict := types.NewDict()
+		dict.Insert("Names", types.Array{})
+
+		indRef, err := xRefTable.IndRefForNewObject(dict)
+		if err != nil {
+			return fmt.Errorf("name tree %q: create tree: %w", nameTreeName, err)
+		}
+
+		d.Insert(nameTreeName, *indRef)
+
+		xRefTable.Names[nameTreeName] = &Node{D: dict}
+
+		return nil
+	}
+
+	d1, err := xRefTable.DereferenceDict(o)
+	if err != nil {
+		return fmt.Errorf("name tree %q: dereference tree: %w", nameTreeName, err)
+	}
+	if d1 == nil {
+		return fmt.Errorf("name tree %q: dereference tree: missing dictionary", nameTreeName)
+	}
+
+	xRefTable.Names[nameTreeName] = &Node{D: d1}
+
+	return nil
+}
+
+// NamesDict returns the dict that contains all name trees.
+func (xRefTable *XRefTable) NamesDict() (types.Dict, error) {
+	d, err := xRefTable.Catalog()
+	if err != nil {
+		return nil, err
+	}
+
+	o, found := d.Find("Names")
+	if !found {
+		dict := types.NewDict()
+		indRef, err := xRefTable.IndRefForNewObject(dict)
+		if err != nil {
+			return nil, err
+		}
+		d["Names"] = *indRef
+		return dict, nil
+	}
+
+	return xRefTable.DereferenceDict(o)
+}
+
+// RemoveNameTree removes a specific name tree.
+// Also removes a resulting empty names dict.
+func (xRefTable *XRefTable) RemoveNameTree(c context.Context, nameTreeName string) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	namesDict, err := xRefTable.NamesDict()
+	if err != nil {
+		return fmt.Errorf("name tree %q: obtain Names dictionary: %w", nameTreeName, err)
+	}
+
+	if namesDict == nil {
+		return errors.New("removeNameTree: root entry \"Names\" corrupt")
+	}
+
+	// We have an existing name dict.
+
+	// Delete the name tree.
+	if err = xRefTable.DeleteDictEntry(c, namesDict, nameTreeName); err != nil {
+		return fmt.Errorf("name tree %q: delete tree entry: %w", nameTreeName, err)
+	}
+	if namesDict.Len() > 0 {
+		return nil
+	}
+
+	// Remove empty names dict.
+	rootDict, err := xRefTable.Catalog()
+	if err != nil {
+		return fmt.Errorf("name tree %q: obtain catalog: %w", nameTreeName, err)
+	}
+	if err = xRefTable.DeleteDictEntry(c, rootDict, "Names"); err != nil {
+		return fmt.Errorf("name tree %q: delete empty catalog Names entry: %w", nameTreeName, err)
+	}
+
+	if log.DebugEnabled() {
+		log.Debug.Printf("Deleted Names from root: %s\n", rootDict)
+	}
+
+	return nil
+}
+
+// RemoveCollection removes an existing Collection entry from the catalog.
+func (xRefTable *XRefTable) RemoveCollection(c context.Context) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	rootDict, err := xRefTable.Catalog()
+	if err != nil {
+		return fmt.Errorf("portfolio: catalog: %w", err)
+	}
+	if rootDict == nil {
+		return errors.New("portfolio: catalog: missing dictionary")
+	}
+	if err := xRefTable.DeleteDictEntry(c, rootDict, "Collection"); err != nil {
+		return fmt.Errorf("portfolio: delete Collection entry: %w", err)
+	}
+
+	return nil
+}
+
+// EnsureCollection makes sure there is a Collection entry in the catalog.
+// Needed for portfolio / portable collections eg. for file attachments.
+func (xRefTable *XRefTable) EnsureCollection() error {
+	rootDict, err := xRefTable.Catalog()
+	if err != nil {
+		return fmt.Errorf("portfolio: catalog: %w", err)
+	}
+	if rootDict == nil {
+		return errors.New("portfolio: catalog: missing dictionary")
+	}
+
+	if _, found := rootDict.Find("Collection"); found {
+		return nil
+	}
+
+	dict := types.NewDict()
+	dict.Insert("Type", types.Name("Collection"))
+	dict.Insert("View", types.Name("D"))
+
+	schemaDict := types.NewDict()
+	schemaDict.Insert("Type", types.Name("CollectionSchema"))
+
+	fileNameCFDict := types.NewDict()
+	fileNameCFDict.Insert("Type", types.Name("CollectionField"))
+	fileNameCFDict.Insert("Subtype", types.Name("F"))
+	fileNameCFDict.Insert("N", types.StringLiteral("Filename"))
+	fileNameCFDict.Insert("O", types.Integer(1))
+	schemaDict.Insert("FileName", fileNameCFDict)
+
+	descCFDict := types.NewDict()
+	descCFDict.Insert("Type", types.Name("CollectionField"))
+	descCFDict.Insert("Subtype", types.Name("Desc"))
+	descCFDict.Insert("N", types.StringLiteral("Description"))
+	descCFDict.Insert("O", types.Integer(2))
+	schemaDict.Insert("Description", descCFDict)
+
+	sizeCFDict := types.NewDict()
+	sizeCFDict.Insert("Type", types.Name("CollectionField"))
+	sizeCFDict.Insert("Subtype", types.Name("Size"))
+	sizeCFDict.Insert("N", types.StringLiteral("Size"))
+	sizeCFDict.Insert("O", types.Integer(3))
+	schemaDict.Insert("Size", sizeCFDict)
+
+	modDateCFDict := types.NewDict()
+	modDateCFDict.Insert("Type", types.Name("CollectionField"))
+	modDateCFDict.Insert("Subtype", types.Name("ModDate"))
+	modDateCFDict.Insert("N", types.StringLiteral("Last Modification"))
+	modDateCFDict.Insert("O", types.Integer(4))
+	schemaDict.Insert("ModDate", modDateCFDict)
+
+	//TODO use xRefTable.InsertAndUseRecycled(xRefTableEntry)
+
+	indRef, err := xRefTable.IndRefForNewObject(schemaDict)
+	if err != nil {
+		return fmt.Errorf("portfolio: insert schema object: %w", err)
+	}
+	dict.Insert("Schema", *indRef)
+
+	sortDict := types.NewDict()
+	sortDict.Insert("S", types.Name("ModDate"))
+	sortDict.Insert("A", types.Boolean(false))
+	dict.Insert("Sort", sortDict)
+
+	indRef, err = xRefTable.IndRefForNewObject(dict)
+	if err != nil {
+		return fmt.Errorf("portfolio: insert Collection object: %w", err)
+	}
+	rootDict.Insert("Collection", *indRef)
+
+	return nil
+}
+
+// RemoveEmbeddedFilesNameTree removes both the embedded files name tree and the Collection dict.
+func (xRefTable *XRefTable) RemoveEmbeddedFilesNameTree(c context.Context) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	delete(xRefTable.Names, "EmbeddedFiles")
+
+	if err := xRefTable.RemoveNameTree(c, "EmbeddedFiles"); err != nil {
+		return fmt.Errorf("remove EmbeddedFiles name tree: %w", err)
+	}
+
+	if err := xRefTable.RemoveCollection(c); err != nil {
+		return fmt.Errorf("remove portfolio Collection: %w", err)
+	}
+
+	return nil
+}
+
+// IDFirstElement returns the first element of ID.
+func (xRefTable *XRefTable) IDFirstElement() (id []byte, err error) {
+	hl, ok := xRefTable.ID[0].(types.HexLiteral)
+	if ok {
+		return hl.Bytes()
+	}
+
+	sl, ok := xRefTable.ID[0].(types.StringLiteral)
+	if !ok {
+		return nil, errors.New("id must contain hex literals or string literals")
+	}
+
+	bb, err := types.Unescape(sl.Value())
+	if err != nil {
+		return nil, err
+	}
+
+	return bb, nil
+}
+
+// InheritedPageAttrs represents all inherited page attributes.
+type InheritedPageAttrs struct {
+	Resources types.Dict
+	MediaBox  *types.Rectangle
+	CropBox   *types.Rectangle
+	Rotate    int
+}
+
+func rect(xRefTable *XRefTable, a types.Array) (*types.Rectangle, error) {
+	llx, err := xRefTable.DereferenceNumber(a[0])
+	if err != nil {
+		return nil, err
+	}
+
+	lly, err := xRefTable.DereferenceNumber(a[1])
+	if err != nil {
+		return nil, err
+	}
+
+	urx, err := xRefTable.DereferenceNumber(a[2])
+	if err != nil {
+		return nil, err
+	}
+
+	ury, err := xRefTable.DereferenceNumber(a[3])
+	if err != nil {
+		return nil, err
+	}
+
+	return types.NewRectangle(llx, lly, urx, ury), nil
+}
+
+func weaveResourceSubDict(d1, d2 types.Dict) {
+	for k, v := range d1 {
+		if v != nil {
+			v = v.Clone()
+		}
+		d2[k] = v
+	}
+}
+
+func (xRefTable *XRefTable) consolidateResources(obj types.Object, pAttrs *InheritedPageAttrs) error {
+	d, err := xRefTable.DereferenceDict(obj)
+	if err != nil {
+		return err
+	}
+	if len(d) == 0 {
+		return nil
+	}
+
+	if pAttrs.Resources == nil {
+		// Create a resource dict that eventually will contain any inherited resources
+		// walking down from page root to leaf node representing the page in question.
+		pAttrs.Resources = d.Clone().(types.Dict)
+		for _, k := range slices.Sorted(maps.Keys(pAttrs.Resources)) {
+			o, err := xRefTable.Dereference(pAttrs.Resources[k])
+			if err != nil {
+				return fmt.Errorf("resource %s: %w", k, err)
+			}
+			if o == nil {
+				// A missing reference is null, equivalent to an omitted entry (PDF 2.0 7.3.9).
+				delete(pAttrs.Resources, k)
+				continue
+			}
+			pAttrs.Resources[k] = o.Clone()
+		}
+		if log.WriteEnabled() {
+			log.Write.Printf("pA:\n%s\n", pAttrs.Resources)
+		}
+		return nil
+	}
+
+	// Accumulate any resources defined in this page node into the inherited resources.
+	for _, k := range slices.Sorted(maps.Keys(d)) {
+		v := d[k]
+		if k == "ProcSet" || v == nil {
+			continue
+		}
+		d1, err := xRefTable.DereferenceDict(v)
+		if err != nil {
+			return fmt.Errorf("resource %s: %w", k, err)
+		}
+		if d1 == nil {
+			continue
+		}
+		// We have identified a subdict that needs to go into the inherited res dict.
+		if pAttrs.Resources[k] == nil {
+			pAttrs.Resources[k] = d1.Clone()
+			continue
+		}
+		d2, ok := pAttrs.Resources[k].(types.Dict)
+		if !ok {
+			return fmt.Errorf("consolidateResources: expected Dict d2: %T", pAttrs.Resources[k])
+		}
+		// Weave sub dict d1 into inherited sub dict d2.
+		// Any existing resource names will be overridden.
+		weaveResourceSubDict(d1, d2)
+	}
+
+	return nil
+}
+
+func (xRefTable *XRefTable) checkInheritedPageAttrs(pageDict types.Dict, pAttrs *InheritedPageAttrs, consolidateRes bool) error {
+	// Return mediaBox, cropBox and rotate as inherited.
+	// if consolidateRes is true
+	// then consolidate all inherited resources as required by content stream
+	// else return pageDict resources.
+	var (
+		obj   types.Object
+		found bool
+	)
+
+	if obj, found = pageDict.Find("MediaBox"); found {
+		a, err := xRefTable.DereferenceArray(obj)
+		if err != nil {
+			return err
+		}
+		if pAttrs.MediaBox, err = rect(xRefTable, a); err != nil {
+			return err
+		}
+	}
+
+	if obj, found = pageDict.Find("CropBox"); found {
+		a, err := xRefTable.DereferenceArray(obj)
+		if err != nil {
+			return err
+		}
+		if pAttrs.CropBox, err = rect(xRefTable, a); err != nil {
+			return err
+		}
+	}
+
+	if obj, found = pageDict.Find("Rotate"); found {
+		obj, err := xRefTable.Dereference(obj)
+		if err != nil {
+			return err
+		}
+
+		switch obj := obj.(type) {
+		case types.Integer:
+			pAttrs.Rotate = obj.Value()
+		case types.Float:
+			if xRefTable.ValidationMode == ValidationStrict {
+				return fmt.Errorf("dereferenceNumber: wrong type <%v>", obj)
+			}
+
+			pAttrs.Rotate = int(math.Round(obj.Value()))
+		default:
+			return fmt.Errorf("dereferenceNumber: wrong type <%v>", obj)
+		}
+	}
+
+	if obj, found = pageDict.Find("Resources"); !found {
+		return nil
+	}
+
+	if !consolidateRes {
+		// Return resourceDict as is.
+		d, err := xRefTable.DereferenceDict(obj)
+		if err != nil {
+			return err
+		}
+		pAttrs.Resources = d
+		return nil
+	}
+
+	// Accumulate inherited resources.
+	return xRefTable.consolidateResources(obj, pAttrs)
+}
+
+// DecodeStream decodes sd using the configured decoded-stream byte limit.
+// A nil table or missing configuration selects the default limit.
+func (xRefTable *XRefTable) DecodeStream(sd *types.StreamDict) error {
+	var conf *Configuration
+	if xRefTable != nil {
+		conf = xRefTable.Conf
+	}
+	return sd.DecodeWithLimit(conf.DecodeLimit())
+}
+
+func (xRefTable *XRefTable) decodeContentStream(sd *types.StreamDict, pageNr int) error {
+	err := xRefTable.DecodeStream(sd)
+	if errors.Is(err, filter.ErrUnsupportedFilter) {
+		return fmt.Errorf("page %d content decode: %w", pageNr, err)
+	}
+	if err != nil {
+		if xRefTable.ValidationMode == ValidationStrict {
+			return fmt.Errorf("page %d content decode: %w", pageNr, err)
+		}
+		if !filter.IsCorruptFlateInput(err) && !errors.Is(err, zlib.ErrChecksum) {
+			return fmt.Errorf("page %d content decode: %w", pageNr, err)
+		}
+		ShowSkipped(fmt.Sprintf("page %d: corrupt content stream (flate)", pageNr))
+	}
+	return nil
+}
+
+func (xRefTable *XRefTable) appendPageContent(bb []byte, sd *types.StreamDict, pageNr int) ([]byte, error) {
+	if err := xRefTable.decodeContentStream(sd, pageNr); err != nil {
+		return nil, err
+	}
+	if limit := xRefTable.Conf.DecodeLimit(); limit >= 0 && int64(len(sd.Content)) > limit-int64(len(bb)) {
+		return nil, fmt.Errorf("page %d combined content: %w", pageNr, filter.ErrDecodeLimitExceeded)
+	}
+	return append(bb, sd.Content...), nil
+}
+
+// PageContent returns the content in PDF syntax for page dict d.
+// The configured decode limit also bounds the combined content of a stream array.
+func (xRefTable *XRefTable) PageContent(d types.Dict, pageNr int) ([]byte, error) {
+	o, _ := d.Find("Contents")
+	if o == nil {
+		return nil, ErrNoContent
+	}
+
+	o, err := xRefTable.Dereference(o)
+	if err != nil || o == nil {
+		return nil, err
+	}
+
+	bb := []byte{}
+
+	switch o := o.(type) {
+
+	case types.StreamDict:
+		// no further processing.
+		bb, err = xRefTable.appendPageContent(bb, &o, pageNr)
+		if err != nil {
+			return nil, err
+		}
+
+	case types.Array:
+		// process array of content stream dicts.
+		for _, o := range o {
+			if o == nil {
+				continue
+			}
+			o, _, err := xRefTable.DereferenceStreamDict(o)
+			if err != nil {
+				return nil, fmt.Errorf("page %d content decode: %w", pageNr, err)
+			}
+			if o == nil {
+				continue
+			}
+			bb, err = xRefTable.appendPageContent(bb, o, pageNr)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+	default:
+		return nil, fmt.Errorf("page content must be stream dict or array")
+	}
+
+	if len(bb) == 0 {
+		return nil, ErrNoContent
+	}
+
+	return bb, nil
+}
+
+func (xRefTable *XRefTable) consolidateResourceSubDict(d types.Dict, key string, prn PageResourceNames, pageNr int) error {
+	if !prn.HasResources(key) {
+		d.Delete(key)
+		return nil
+	}
+	d1, err := xRefTable.DereferenceDict(d[key])
+	if err != nil {
+		return fmt.Errorf("page %d: resource %s: %w", pageNr, key, err)
+	}
+	if d1 == nil {
+		d.Delete(key)
+		resources := make([]string, 0, len(prn.Resources(key)))
+		for resourceName := range prn.Resources(key) {
+			resources = append(resources, resourceName)
+		}
+		sort.Strings(resources)
+		s := fmt.Sprintf(
+			"missing required %s resource dictionary (referenced resources: %s)",
+			key,
+			strings.Join(resources, ", "),
+		)
+		if xRefTable.ValidationMode == ValidationStrict {
+			return errors.New(s)
+		}
+		ShowSkipped(fmt.Sprintf("page %d: %s", pageNr, s))
+		return nil
+	}
+	set := types.StringSet{}
+	res := prn.Resources(key)
+	// Iterate over inherited resource sub dict and remove any entries not required.
+	for k := range d1 {
+		ki := types.Name(k).Value()
+		if !res[ki] {
+			d1.Delete(k)
+			continue
+		}
+		set[ki] = true
+	}
+	// Check for missing resource sub dict entries.
+	for _, k := range slices.Sorted(maps.Keys(res)) {
+		if !set[k] {
+			s := fmt.Sprintf("page %d: missing required %s: %s", pageNr, key, k)
+			if xRefTable.ValidationMode == ValidationStrict {
+				return errors.New(s)
+			}
+			ShowSkipped(s)
+		}
+	}
+	d[key] = d1
+	return nil
+}
+
+func (xRefTable *XRefTable) consolidateResourceDict(d types.Dict, prn PageResourceNames, pageNr int) error {
+	for _, k := range resourceTypes {
+		if err := xRefTable.consolidateResourceSubDict(d, k, prn, pageNr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (xRefTable *XRefTable) pageContentContext(pageDict types.Dict) string {
+	o := pageDict["Contents"]
+	objNr := 0
+	if ir, ok := o.(types.IndirectRef); ok {
+		objNr = ir.ObjectNumber.Value()
+		var err error
+		o, err = xRefTable.Dereference(ir)
+		if err != nil {
+			return "page content"
+		}
+	}
+
+	context := "page content"
+	switch o.(type) {
+	case types.StreamDict:
+		context = "content stream"
+	case types.Array:
+		context = "content stream array"
+	}
+	if objNr > 0 {
+		return fmt.Sprintf("%s obj#%d", context, objNr)
+	}
+	return context
+}
+
+type contentParseError struct {
+	err error
+}
+
+func (e *contentParseError) Error() string {
+	if errors.Is(e.err, errHexLiteralCorrupt) {
+		return "corrupt hex string literal"
+	}
+	return e.err.Error()
+}
+
+func (e *contentParseError) Unwrap() error {
+	return e.err
+}
+
+func (xRefTable *XRefTable) consolidateResourcesWithContent(pageDict, resDict types.Dict, pageNr int, consolidateRes bool) error {
+	if !consolidateRes {
+		return nil
+	}
+
+	contentContext := xRefTable.pageContentContext(pageDict)
+	bb, err := xRefTable.PageContent(pageDict, pageNr)
+	if err != nil {
+		if err == ErrNoContent {
+			return nil
+		}
+		return fmt.Errorf("%s: %w", contentContext, err)
+	}
+
+	// Calculate resources required by the content stream of this page.
+	prn, err := parseContent(string(bb), xRefTable.ValidationMode == ValidationRelaxed, xRefTable.PDF20())
+	if err != nil {
+		return fmt.Errorf("%s: %w", contentContext, &contentParseError{err})
+	}
+
+	// Compare required resources (prn) with available resources (pAttrs.resources).
+	// Remove any resource that's not required.
+	// Return an error for any required resource missing.
+	// TODO Calculate and accumulate resources required by content streams of any present form or type 3 fonts.
+	if err := xRefTable.consolidateResourceDict(resDict, prn, pageNr); err != nil {
+		return fmt.Errorf("resource dict: %w", err)
+	}
+	return nil
+}
+
+func (xRefTable *XRefTable) pageObjType(indRef types.IndirectRef) (string, error) {
+	pageNodeDict, err := xRefTable.DereferenceDict(indRef)
+	if err != nil {
+		return "", err
+	}
+
+	pageType, _, err := xRefTable.DereferenceNameEntry(pageNodeDict, "Type")
+	if err != nil {
+		return "", err
+	}
+	if pageType != nil {
+		return pageType.Value(), nil
+	}
+
+	objType := ""
+
+	if xRefTable.ValidationMode == ValidationRelaxed {
+		if _, hasCount := pageNodeDict.Find("Count"); hasCount {
+			if _, hasKids := pageNodeDict.Find("Kids"); hasKids {
+				ShowRepaired(fmt.Sprintf("page tree node %s", indRef))
+				objType = "Pages"
+			}
+		}
+	}
+
+	return objType, nil
+}
+
+func errForUnexpectedPageObjectType(validationMode int, objType string, indRef types.IndirectRef) error {
+	if validationMode == ValidationRelaxed {
+		return nil
+	}
+
+	if objType == "Template" {
+		return fmt.Errorf("template page tree nodes not supported: %s", indRef)
+	}
+
+	if objType == "" {
+		return fmt.Errorf("page tree node without type: %s", indRef)
+	}
+
+	return fmt.Errorf("unsupported page tree node: %s", indRef)
+}
+
+func (xRefTable *XRefTable) processPageTreeKidForPageDict(c context.Context, indRef types.IndirectRef, pAttrs *InheritedPageAttrs, p *int, page int, consolidateRes bool, depth int, visit *PageTreeVisit) (types.Dict, *types.IndirectRef, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
+	}
+	objType, err := xRefTable.pageObjType(indRef)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	switch objType {
+
+	case "Pages":
+		return xRefTable.processPageTreeForPageDictDepth(c, &indRef, pAttrs, p, page, consolidateRes, depth+1, visit)
+
+	case "Page":
+		*p++
+		if *p == page {
+			return xRefTable.processPageTreeForPageDictDepth(c, &indRef, pAttrs, p, page, consolidateRes, depth+1, visit)
+		}
+
+	default:
+		return nil, nil, errForUnexpectedPageObjectType(xRefTable.ValidationMode, objType, indRef)
+	}
+
+	return nil, nil, nil
+}
+
+func (xRefTable *XRefTable) dereferencePageCount(d types.Dict, ownerObjNr int) (*int, error) {
+	i, _, err := xRefTable.DereferenceIntegerEntry(d, "Count")
+	if err != nil {
+		return nil, WithValidationErrorObject(err, ownerObjNr)
+	}
+	if i == nil {
+		return nil, nil
+	}
+
+	count := i.Value()
+	return &count, nil
+}
+
+func (xRefTable *XRefTable) checkPageTreeTraversal(c context.Context, depth int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	return xRefTable.CheckRecursionDepth("page tree", depth)
+}
+
+func (xRefTable *XRefTable) processPageTreeForPageDictDepth(c context.Context, root *types.IndirectRef, pAttrs *InheritedPageAttrs, p *int, page int, consolidateRes bool, depth int, visit *PageTreeVisit) (types.Dict, *types.IndirectRef, error) {
+	// Walk this page tree all the way down to the leaf node representing page.
+
+	//fmt.Printf("entering processPageTreeForPageDict: p=%d obj#%d\n", *p, root.ObjectNumber.Value())
+
+	if err := xRefTable.checkPageTreeTraversal(c, depth); err != nil {
+		return nil, nil, err
+	}
+
+	d, err := xRefTable.DereferenceDict(*root)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pageCount, err := xRefTable.dereferencePageCount(d, root.ObjectNumber.Value())
+	if err != nil {
+		return nil, nil, fmt.Errorf("page tree obj#%d Count: %w", root.ObjectNumber.Value(), err)
+	}
+	if pageCount != nil {
+		if *p+*pageCount < page {
+			// Skip sub pagetree.
+			*p += *pageCount
+			return nil, nil, nil
+		}
+	}
+
+	// Return the current state of all page attributes that may be inherited.
+	if err = xRefTable.checkInheritedPageAttrs(d, pAttrs, consolidateRes); err != nil {
+		return nil, nil, err
+	}
+
+	kids := d.ArrayEntry("Kids")
+	if kids == nil {
+		return d, root, xRefTable.consolidateResourcesWithContent(d, pAttrs.Resources, page, consolidateRes)
+	}
+	objNr := root.ObjectNumber.Value()
+	if err := visit.Enter(objNr); err != nil {
+		return nil, nil, err
+	}
+	defer visit.Leave(objNr)
+
+	for _, o := range kids {
+		if err := contextutil.Check(c); err != nil {
+			return nil, nil, err
+		}
+
+		if o == nil {
+			continue
+		}
+
+		// Process next page node dict.
+
+		indRef, ok := o.(types.IndirectRef)
+		if !ok {
+			return nil, nil, fmt.Errorf("processPageTreeForPageDictDepth: corrupt page node dict")
+		}
+
+		pageDict, pageDictIndRef, err := xRefTable.processPageTreeKidForPageDict(c, indRef, pAttrs, p, page, consolidateRes, depth, visit)
+		if err != nil {
+			return nil, nil, err
+		}
+		if pageDict != nil {
+			return pageDict, pageDictIndRef, nil
+		}
+	}
+
+	return nil, nil, nil
+}
+
+func (xRefTable *XRefTable) processPageTreeForPageDict(c context.Context, root *types.IndirectRef, pAttrs *InheritedPageAttrs, p *int, page int, consolidateRes bool) (types.Dict, *types.IndirectRef, error) {
+	return xRefTable.processPageTreeForPageDictDepth(c, root, pAttrs, p, page, consolidateRes, 0, NewPageTreeVisit())
+}
+
+// PageDict returns a specific page dict along with the resources, mediaBox and CropBox in effect.
+// consolidateRes ensures optimized resources in InheritedPageAttrs.
+func (xRefTable *XRefTable) PageDict(c context.Context, pageNr int, consolidateRes bool) (types.Dict, *types.IndirectRef, *InheritedPageAttrs, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, nil, err
+	}
+	var (
+		inhPAttrs InheritedPageAttrs
+		pageCount int
+	)
+
+	if pageNr <= 0 || pageNr > xRefTable.PageCount {
+		return nil, nil, nil, ErrPageNotFound
+	}
+
+	// Get an indirect reference to the page tree root dict.
+	pageRootDictIndRef, err := xRefTable.Pages()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if consolidateRes {
+		consolidateRes = xRefTable.Conf.OptimizeResourceDicts
+	}
+
+	// Calculate and return only resources that are really needed by
+	// any content stream of this page and any possible forms or type 3 fonts referenced.
+	pageDict, pageDictindRef, err := xRefTable.processPageTreeForPageDict(c, pageRootDictIndRef, &inhPAttrs, &pageCount, pageNr, consolidateRes)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if pageDict == nil || pageDictindRef == nil {
+		return nil, nil, nil, ErrPageNotFound
+	}
+
+	return pageDict, pageDictindRef, &inhPAttrs, nil
+}
+
+func cloneInheritedPageAttrs(pAttrs InheritedPageAttrs) InheritedPageAttrs {
+	if pAttrs.Resources != nil {
+		pAttrs.Resources = pAttrs.Resources.Clone().(types.Dict)
+	}
+	return pAttrs
+}
+
+func (xRefTable *XRefTable) consolidatePageResourcesForKid(
+	o types.Object,
+	pAttrs InheritedPageAttrs,
+	pageNr *int,
+	depth int,
+	visit *PageTreeVisit,
+) error {
+	indRef, ok := o.(types.IndirectRef)
+	if !ok {
+		return errors.New("corrupt page node dict")
+	}
+
+	objType, err := xRefTable.pageObjType(indRef)
+	if err != nil {
+		return err
+	}
+	if objType != "Pages" && objType != "Page" {
+		return errForUnexpectedPageObjectType(xRefTable.ValidationMode, objType, indRef)
+	}
+	return xRefTable.consolidatePageResourcesForNode(&indRef, pAttrs, pageNr, depth+1, visit)
+}
+
+type pageResourceContextError struct {
+	pageNr int
+	objNr  int
+	err    error
+}
+
+func (e *pageResourceContextError) Error() string {
+	return fmt.Sprintf("page %d obj#%d: %v", e.pageNr, e.objNr, e.err)
+}
+
+func (e *pageResourceContextError) Unwrap() error {
+	return e.err
+}
+
+func (xRefTable *XRefTable) consolidatePageResourcesForNode(
+	root *types.IndirectRef,
+	pAttrs InheritedPageAttrs,
+	pageNr *int,
+	depth int,
+	visit *PageTreeVisit,
+) error {
+	if err := xRefTable.CheckRecursionDepth("page tree", depth); err != nil {
+		return err
+	}
+
+	d, err := xRefTable.DereferenceDict(*root)
+	if err != nil {
+		return err
+	}
+	if d == nil {
+		return ErrPageNotFound
+	}
+	pAttrs = cloneInheritedPageAttrs(pAttrs)
+	if err = xRefTable.checkInheritedPageAttrs(d, &pAttrs, true); err != nil {
+		return err
+	}
+
+	kids := d.ArrayEntry("Kids")
+	if kids == nil {
+		currentPageNr := *pageNr + 1
+		if err := xRefTable.consolidateResourcesWithContent(d, pAttrs.Resources, currentPageNr, true); err != nil {
+			return &pageResourceContextError{
+				pageNr: currentPageNr,
+				objNr:  root.ObjectNumber.Value(),
+				err:    err,
+			}
+		}
+		if len(pAttrs.Resources) > 0 {
+			d["Resources"] = pAttrs.Resources
+		}
+		*pageNr = currentPageNr
+		return nil
+	}
+
+	objNr := root.ObjectNumber.Value()
+	if err := visit.Enter(objNr); err != nil {
+		return err
+	}
+	defer visit.Leave(objNr)
+
+	for _, o := range kids {
+		if o == nil {
+			continue
+		}
+		if err := xRefTable.consolidatePageResourcesForKid(o, pAttrs, pageNr, depth, visit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ConsolidatePageResources consolidates inherited resource dictionaries in one page-tree pass.
+func (xRefTable *XRefTable) ConsolidatePageResources() error {
+	root, err := xRefTable.Pages()
+	if err != nil {
+		return fmt.Errorf("page 1: resource dict: %w", err)
+	}
+	if root == nil {
+		return fmt.Errorf("page 1: resource dict: %w", ErrPageNotFound)
+	}
+
+	pageNr := 0
+	err = xRefTable.consolidatePageResourcesForNode(
+		root,
+		InheritedPageAttrs{},
+		&pageNr,
+		0,
+		NewPageTreeVisit(),
+	)
+	if err != nil {
+		var pageErr *pageResourceContextError
+		if errors.As(err, &pageErr) {
+			return err
+		}
+		return fmt.Errorf("page %d: resource dict: %w", pageNr+1, err)
+	}
+	return nil
+}
+
+// PageDictIndRef returns the pageDict IndRef for a logical page number.
+func (xRefTable *XRefTable) PageDictIndRef(c context.Context, page int) (*types.IndirectRef, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
+	var (
+		inhPAttrs InheritedPageAttrs
+		pageCount int
+	)
+
+	// Get an indirect reference to the page tree root dict.
+	pageRootDictIndRef, err := xRefTable.Pages()
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate and return only resources that are really needed by
+	// any content stream of this page and any possible forms or type 3 fonts referenced.
+	consolidateRes := false
+	_, ir, err := xRefTable.processPageTreeForPageDict(c, pageRootDictIndRef, &inhPAttrs, &pageCount, page, consolidateRes)
+	if err != nil {
+		return nil, err
+	}
+	if ir == nil {
+		return nil, ErrPageNotFound
+	}
+
+	return ir, nil
+}
+
+// Calculate logical page number for page dict object number.
+func (xRefTable *XRefTable) processPageTreeForPageNumberDepth(c context.Context, root *types.IndirectRef, pageCount *int, pageObjNr int, depth int, visit *PageTreeVisit) (int, error) {
+	if err := contextutil.Check(c); err != nil {
+		return 0, err
+	}
+	//fmt.Printf("entering processPageTreeForPageNumber: p=%d obj#%d\n", *p, root.ObjectNumber.Value())
+
+	if err := xRefTable.CheckRecursionDepth("page tree", depth); err != nil {
+		return 0, err
+	}
+
+	d, err := xRefTable.DereferenceDict(*root)
+	if err != nil {
+		return 0, err
+	}
+	objNr := root.ObjectNumber.Value()
+	if err := visit.Enter(objNr); err != nil {
+		return 0, err
+	}
+	defer visit.Leave(objNr)
+
+	// Iterate over page tree.
+	for _, o := range d.ArrayEntry("Kids") {
+		if err := contextutil.Check(c); err != nil {
+			return 0, err
+		}
+
+		if o == nil {
+			continue
+		}
+
+		// Dereference next page node dict.
+		indRef, ok := o.(types.IndirectRef)
+		if !ok {
+			return 0, fmt.Errorf("processPageTreeForPageNumberDepth: corrupt page node dict")
+		}
+
+		objNr := indRef.ObjectNumber.Value()
+
+		_, pageType, err := xRefTable.dereferencePageNodeDictType(indRef)
+		if err != nil {
+			return 0, fmt.Errorf("page tree kid obj#%d: %w", objNr, err)
+		}
+
+		switch pageType.Value() {
+
+		case "Pages":
+			// Recurse over sub pagetree.
+			pageNr, err := xRefTable.processPageTreeForPageNumberDepth(c, &indRef, pageCount, pageObjNr, depth+1, visit)
+			if err != nil {
+				return 0, err
+			}
+			if pageNr > 0 {
+				return pageNr, nil
+			}
+
+		case "Page":
+			*pageCount++
+			if objNr == pageObjNr {
+				return *pageCount, nil
+			}
+		}
+
+	}
+
+	return 0, nil
+}
+
+func (xRefTable *XRefTable) processPageTreeForPageNumber(c context.Context, root *types.IndirectRef, pageCount *int, pageObjNr int) (int, error) {
+	return xRefTable.processPageTreeForPageNumberDepth(c, root, pageCount, pageObjNr, 0, NewPageTreeVisit())
+}
+
+// PageNumber returns the logical page number for a page dict object number.
+func (xRefTable *XRefTable) PageNumber(c context.Context, pageObjNr int) (int, error) {
+	if err := contextutil.Check(c); err != nil {
+		return 0, err
+	}
+	// Get an indirect reference to the page tree root dict.
+	pageRootDict, err := xRefTable.Pages()
+	if err != nil {
+		return 0, err
+	}
+	pageCount := 0
+	return xRefTable.processPageTreeForPageNumber(c, pageRootDict, &pageCount, pageObjNr)
+}
+
+// EnsurePageCount evaluates the page count for xRefTable if necessary.
+func (xRefTable *XRefTable) EnsurePageCount() error {
+	if xRefTable.PageCount > 0 {
+		return nil
+	}
+
+	pageRoot, err := xRefTable.Pages()
+	if err != nil {
+		return err
+	}
+
+	d, err := xRefTable.DereferenceDict(*pageRoot)
+	if err != nil {
+		return err
+	}
+
+	pageCount, err := xRefTable.dereferencePageCount(d, pageRoot.ObjectNumber.Value())
+	if err != nil {
+		return fmt.Errorf("pageDict Count: %w", err)
+	}
+	if pageCount == nil {
+		return errors.New("pageDict: missing \"Count\"")
+	}
+
+	xRefTable.PageCount = *pageCount
+
+	return nil
+}
+
+func (xRefTable *XRefTable) resolvePageBoundary(d types.Dict, boxName string) (*types.Rectangle, error) {
+	obj, found := d.Find(boxName)
+	if !found {
+		return nil, nil
+	}
+	a, err := xRefTable.DereferenceArray(obj)
+	if err != nil {
+		return nil, fmt.Errorf("%s: dereference array: %w", boxName, err)
+	}
+	r, err := rect(xRefTable, a)
+	if err != nil {
+		return nil, fmt.Errorf("%s: rectangle: %w", boxName, err)
+	}
+	return r, nil
+}
+
+func (xRefTable *XRefTable) collectPageBoundariesForPage(d types.Dict, pb []PageBoundaries, inhMediaBox, inhCropBox *types.Rectangle, rot, p int) error {
+	if inhMediaBox != nil {
+		pb[p].Media = &Box{Rect: inhMediaBox, Inherited: true}
+	}
+	r, err := xRefTable.resolvePageBoundary(d, "MediaBox")
+	if err != nil {
+		return err
+	}
+	if r != nil {
+		pb[p].Media = &Box{Rect: r, Inherited: false}
+	}
+	if pb[p].Media == nil {
+		return errors.New("MediaBox: missing effective box")
+	}
+
+	if inhCropBox != nil {
+		pb[p].Crop = &Box{Rect: inhCropBox, Inherited: true}
+	}
+	r, err = xRefTable.resolvePageBoundary(d, "CropBox")
+	if err != nil {
+		return err
+	}
+	if r != nil {
+		pb[p].Crop = &Box{Rect: r, Inherited: false}
+	}
+
+	r, err = xRefTable.resolvePageBoundary(d, "TrimBox")
+	if err != nil {
+		return err
+	}
+	if r != nil {
+		pb[p].Trim = &Box{Rect: r}
+	}
+
+	r, err = xRefTable.resolvePageBoundary(d, "BleedBox")
+	if err != nil {
+		return err
+	}
+	if r != nil {
+		pb[p].Bleed = &Box{Rect: r}
+	}
+
+	r, err = xRefTable.resolvePageBoundary(d, "ArtBox")
+	if err != nil {
+		return err
+	}
+	if r != nil {
+		pb[p].Art = &Box{Rect: r}
+	}
+
+	pb[p].Rot = rot
+
+	return nil
+}
+
+func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d types.Dict, inhMediaBox, inhCropBox **types.Rectangle) error {
+	obj, found := d.Find("MediaBox")
+	if found {
+		a, err := xRefTable.DereferenceArray(obj)
+		if err != nil {
+			return fmt.Errorf("MediaBox: dereference array: %w", err)
+		}
+		if *inhMediaBox, err = rect(xRefTable, a); err != nil {
+			return fmt.Errorf("MediaBox: rectangle: %w", err)
+		}
+		*inhCropBox = nil
+	}
+
+	obj, found = d.Find("CropBox")
+	if found {
+		a, err := xRefTable.DereferenceArray(obj)
+		if err != nil {
+			return fmt.Errorf("CropBox: dereference array: %w", err)
+		}
+		if *inhCropBox, err = rect(xRefTable, a); err != nil {
+			return fmt.Errorf("CropBox: rectangle: %w", err)
+		}
+	}
+	return nil
+}
+
+func (xRefTable *XRefTable) collectPageBoundariesForPageTreeKids(
+	c context.Context,
+	parentObjNr int,
+	kids types.Array,
+	inhMediaBox, inhCropBox **types.Rectangle,
+	pb []PageBoundaries,
+	r int,
+	p *int,
+	selectedPages types.IntSet,
+	depth int,
+	visit *PageTreeVisit) error {
+	// Iterate over page tree.
+	for childIndex, o := range kids {
+		if err := c.Err(); err != nil {
+			return err
+		}
+		if o == nil {
+			return fmt.Errorf("page tree obj#%d: kid %d: nil object", parentObjNr, childIndex+1)
+		}
+
+		// Dereference next page node dict.
+		indRef, ok := o.(types.IndirectRef)
+		if !ok {
+			return fmt.Errorf("page tree obj#%d: kid %d: expected indirect reference, got %T", parentObjNr, childIndex+1, o)
+		}
+
+		pageNodeDict, err := xRefTable.DereferenceDict(indRef)
+		if err != nil {
+			return fmt.Errorf("page tree obj#%d: kid %d obj#%d: dereference dict: %w",
+				parentObjNr, childIndex+1, indRef.ObjectNumber.Value(), err)
+		}
+		if pageNodeDict == nil {
+			return fmt.Errorf("page tree obj#%d: kid %d obj#%d: missing dict",
+				parentObjNr, childIndex+1, indRef.ObjectNumber.Value())
+		}
+		pageType, _, err := xRefTable.DereferenceNameEntry(pageNodeDict, "Type")
+		if err != nil {
+			return fmt.Errorf("page tree obj#%d: kid %d obj#%d: Type: %w",
+				parentObjNr, childIndex+1, indRef.ObjectNumber.Value(), err)
+		}
+		if pageType == nil {
+			return fmt.Errorf("page tree obj#%d: kid %d obj#%d: missing Type",
+				parentObjNr, childIndex+1, indRef.ObjectNumber.Value())
+		}
+
+		switch pageType.Value() {
+		case "Pages":
+			if err = xRefTable.collectPageBoundariesForPageTree(
+				c, &indRef, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth+1, visit,
+			); err != nil {
+				return err
+			}
+
+		case "Page":
+			collect := len(selectedPages) == 0
+			if !collect {
+				_, collect = selectedPages[(*p)+1]
+			}
+			if collect {
+				if err = xRefTable.collectPageBoundariesForPageTree(
+					c, &indRef, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth+1, visit,
+				); err != nil {
+					return err
+				}
+			}
+			*p++
+		default:
+			return fmt.Errorf("page tree obj#%d: kid %d obj#%d: unsupported Type %q",
+				parentObjNr, childIndex+1, indRef.ObjectNumber.Value(), pageType.Value())
+		}
+	}
+
+	return nil
+}
+
+func (xRefTable *XRefTable) pageTreeNodeType(d types.Dict, objNr int) (string, error) {
+	pageType, _, err := xRefTable.DereferenceNameEntry(d, "Type")
+	if err != nil {
+		return "", fmt.Errorf("page tree obj#%d: Type: %w", objNr, err)
+	}
+	if pageType == nil {
+		return "", fmt.Errorf("page tree obj#%d: missing Type", objNr)
+	}
+	switch pageType.Value() {
+	case "Page", "Pages":
+		return pageType.Value(), nil
+	}
+	return "", fmt.Errorf("page tree obj#%d: unsupported Type %q", objNr, pageType.Value())
+}
+
+func (xRefTable *XRefTable) pageTreeNodeRotation(d types.Dict, objNr, inherited int) (int, error) {
+	o, found := d.Find("Rotate")
+	if !found {
+		return inherited, nil
+	}
+	o, err := xRefTable.Dereference(o)
+	if err != nil {
+		return 0, fmt.Errorf("page tree obj#%d: Rotate: dereference: %w", objNr, err)
+	}
+	switch o := o.(type) {
+	case types.Integer:
+		return o.Value(), nil
+	case types.Float:
+		if xRefTable.ValidationMode == ValidationStrict {
+			return 0, fmt.Errorf("page tree obj#%d: Rotate: expected integer, got %T", objNr, o)
+		}
+		return int(math.Round(o.Value())), nil
+	}
+	return 0, fmt.Errorf("page tree obj#%d: Rotate: expected number, got %T", objNr, o)
+}
+
+func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
+	c context.Context,
+	root *types.IndirectRef,
+	inhMediaBox, inhCropBox **types.Rectangle,
+	pb []PageBoundaries,
+	r int,
+	p *int,
+	selectedPages types.IntSet,
+	depth int,
+	visit *PageTreeVisit) error {
+	if err := xRefTable.CheckRecursionDepth("page tree", depth); err != nil {
+		return err
+	}
+
+	d, err := xRefTable.DereferenceDict(*root)
+	if err != nil {
+		return fmt.Errorf("page tree obj#%d: dereference dict: %w", root.ObjectNumber.Value(), err)
+	}
+	if d == nil {
+		return fmt.Errorf("page tree obj#%d: missing dict", root.ObjectNumber.Value())
+	}
+	objNr := root.ObjectNumber.Value()
+	pageType, err := xRefTable.pageTreeNodeType(d, objNr)
+	if err != nil {
+		return err
+	}
+	r, err = xRefTable.pageTreeNodeRotation(d, objNr, r)
+	if err != nil {
+		return err
+	}
+
+	if err := xRefTable.collectMediaBoxAndCropBox(d, inhMediaBox, inhCropBox); err != nil {
+		return fmt.Errorf("page tree obj#%d: %w", objNr, err)
+	}
+
+	if pageType == "Page" {
+		if err := xRefTable.collectPageBoundariesForPage(d, pb, *inhMediaBox, *inhCropBox, r, *p); err != nil {
+			return fmt.Errorf("page %d: %w", *p+1, err)
+		}
+		return nil
+	}
+
+	o, found := d.Find("Kids")
+	if !found || o == nil {
+		return fmt.Errorf("page tree obj#%d: missing Kids", objNr)
+	}
+	o, err = xRefTable.Dereference(o)
+	if err != nil {
+		return fmt.Errorf("page tree obj#%d: Kids: dereference: %w", objNr, err)
+	}
+	if o == nil {
+		return fmt.Errorf("page tree obj#%d: missing Kids", objNr)
+	}
+	if err := visit.Enter(objNr); err != nil {
+		return fmt.Errorf("page tree obj#%d: %w", objNr, err)
+	}
+	defer visit.Leave(objNr)
+
+	kids, ok := o.(types.Array)
+	if !ok {
+		return fmt.Errorf("page tree obj#%d: Kids: expected array, got %T", objNr, o)
+	}
+
+	return xRefTable.collectPageBoundariesForPageTreeKids(
+		c, objNr, kids, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth, visit)
+}
+
+// PageBoundaries returns page boundaries sorted by page number and supports cancellation.
+func (xRefTable *XRefTable) PageBoundaries(c context.Context, selectedPages types.IntSet) ([]PageBoundaries, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
+	if xRefTable == nil {
+		return nil, ErrMissingXRefTable
+	}
+	// if err := xRefTable.EnsurePageCount(); err != nil {
+	// 	return nil, err
+	// }
+
+	// Get an indirect reference to the page tree root dict.
+	root, err := xRefTable.Pages()
+	if err != nil {
+		return nil, fmt.Errorf("pages root: %w", err)
+	}
+	if root == nil {
+		return nil, errors.New("missing pages root")
+	}
+
+	i := 0
+	mb := &types.Rectangle{}
+	cb := &types.Rectangle{}
+	pbs := make([]PageBoundaries, xRefTable.PageCount)
+	if err := xRefTable.collectPageBoundariesForPageTree(
+		c, root, &mb, &cb, pbs, 0, &i, selectedPages, 0, NewPageTreeVisit(),
+	); err != nil {
+		return nil, fmt.Errorf("page tree: %w", err)
+	}
+	return pbs, nil
+}
+
+// PageDims returns effective media box dimensions sorted by page number and supports cancellation.
+func (xRefTable *XRefTable) PageDims(c context.Context) ([]types.Dim, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
+	pbs, err := xRefTable.PageBoundaries(c, nil)
+	if err != nil {
+		return nil, fmt.Errorf("page boundaries: %w", err)
+	}
+
+	dims := make([]types.Dim, len(pbs))
+	for i, pb := range pbs {
+		if err := c.Err(); err != nil {
+			return nil, err
+		}
+		d := pb.MediaBox().Dimensions()
+		if pb.Rot%180 != 0 {
+			d.Width, d.Height = d.Height, d.Width
+		}
+		dims[i] = d
+	}
+
+	return dims, c.Err()
+}
+
+// EmptyPage creates an empty page with parentIndRef, mediaBox and optional object number objNr.
+func (xRefTable *XRefTable) EmptyPage(parentIndRef *types.IndirectRef, mediaBox *types.Rectangle, objNr int) (*types.IndirectRef, error) {
+	if parentIndRef == nil {
+		return nil, errors.New("empty page: missing parent")
+	}
+
+	sd, err := xRefTable.NewStreamDictForBuf(nil)
+	if err != nil {
+		return nil, fmt.Errorf("empty page: create content stream: %w", err)
+	}
+	if err := sd.Encode(); err != nil {
+		return nil, fmt.Errorf("empty page: encode content stream: %w", err)
+	}
+
+	arr := types.RectForFormat("A4").Array()
+	if mediaBox != nil {
+		arr = mediaBox.Array()
+	}
+
+	contentsIndRef, err := xRefTable.IndRefForNewObject(*sd)
+	if err != nil {
+		return nil, fmt.Errorf("empty page: create content object: %w", err)
+	}
+
+	pageDict := types.Dict(
+		map[string]types.Object{
+			"Type":      types.Name("Page"),
+			"Parent":    *parentIndRef,
+			"Resources": types.NewDict(),
+			"MediaBox":  arr,
+			"Contents":  *contentsIndRef,
+		},
+	)
+
+	var pageIndRef *types.IndirectRef
+	if objNr > 0 {
+		pageIndRef, err = xRefTable.IndRefForObject(objNr, pageDict)
+	} else {
+		pageIndRef, err = xRefTable.IndRefForNewObject(pageDict)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("empty page: create page object: %w", err)
+	}
+	return pageIndRef, nil
+}
+
+func (xRefTable *XRefTable) pageMediaBox(d types.Dict) (*types.Rectangle, error) {
+	o, found := d.Find("MediaBox")
+	if !found || o == nil {
+		return nil, errors.New("missing MediaBox")
+	}
+
+	a, err := xRefTable.DereferenceArray(o)
+	if err != nil {
+		return nil, fmt.Errorf("MediaBox: dereference array: %w", err)
+	}
+	if len(a) != 4 {
+		return nil, fmt.Errorf("MediaBox: rectangle: expected 4 elements, got %d", len(a))
+	}
+
+	r, err := rect(xRefTable, a)
+	if err != nil {
+		return nil, fmt.Errorf("MediaBox: rectangle: %w", err)
+	}
+	return r, nil
+}
+
+func (xRefTable *XRefTable) emptyPage(parent *types.IndirectRef, d types.Dict, dim *types.Dim, pAttrs *InheritedPageAttrs) (*types.IndirectRef, error) {
+	// TODO cache empty page
+	if dim != nil {
+		return xRefTable.EmptyPage(parent, types.RectForDim(dim.Width, dim.Height), 0)
+	}
+
+	mediaBox, err := pAttrs.MediaBox, error(nil)
+	if mediaBox == nil {
+		mediaBox, err = xRefTable.pageMediaBox(d)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return xRefTable.EmptyPage(parent, mediaBox, 0)
+}
+
+type blankPageInsertion struct {
+	c             context.Context
+	parent        *types.IndirectRef
+	pAttrs        *InheritedPageAttrs
+	p             *int
+	selectedPages types.IntSet
+	dim           *types.Dim
+	before        bool
+	depth         int
+	visit         *PageTreeVisit
+}
+
+func (xRefTable *XRefTable) appendBlankPageForPage(a *types.Array, ir types.IndirectRef, pageNodeDict types.Dict, ctx blankPageInsertion) (int, error) {
+	if err := ctx.c.Err(); err != nil {
+		return 0, err
+	}
+	i := 0
+	(*ctx.p)++
+	if !ctx.before {
+		*a = append(*a, ir)
+		i++
+	}
+	if ctx.selectedPages[*ctx.p] {
+		indRef, err := xRefTable.emptyPage(ctx.parent, pageNodeDict, ctx.dim, ctx.pAttrs)
+		if err != nil {
+			return 0, fmt.Errorf("page %d: create blank page: %w", *ctx.p, err)
+		}
+		*a = append(*a, *indRef)
+		i++
+		xRefTable.SetValid(*indRef)
+	}
+	if ctx.before {
+		*a = append(*a, ir)
+		i++
+	}
+	return i, nil
+}
+
+func (xRefTable *XRefTable) appendBlankPagesForKid(a *types.Array, o types.Object, ctx blankPageInsertion) (int, error) {
+	// Dereference next page node dict.
+	ir, ok := o.(types.IndirectRef)
+	if !ok {
+		return 0, fmt.Errorf("page tree kid: expected indirect reference, got %T", o)
+	}
+
+	pageNodeDict, err := xRefTable.DereferenceDict(ir)
+	if err != nil {
+		return 0, fmt.Errorf("page tree kid obj#%d: dereference dict: %w", ir.ObjectNumber.Value(), err)
+	}
+	if pageNodeDict == nil {
+		return 0, fmt.Errorf("page tree kid obj#%d: missing dict", ir.ObjectNumber.Value())
+	}
+
+	pageType, _, err := xRefTable.DereferenceNameEntry(pageNodeDict, "Type")
+	if err != nil {
+		return 0, fmt.Errorf("page tree kid obj#%d: Type: %w", ir.ObjectNumber.Value(), err)
+	}
+	if pageType == nil {
+		return 0, fmt.Errorf("page tree kid obj#%d: missing Type", ir.ObjectNumber.Value())
+	}
+
+	switch pageType.Value() {
+	case "Pages":
+		j, err := xRefTable.insertBlankPagesDepth(
+			ctx.c, &ir, ctx.pAttrs, ctx.p, ctx.selectedPages, ctx.dim, ctx.before, ctx.depth+1, ctx.visit,
+		)
+		if err != nil {
+			return 0, err
+		}
+		*a = append(*a, ir)
+		return j, nil
+
+	case "Page":
+		return xRefTable.appendBlankPageForPage(a, ir, pageNodeDict, ctx)
+	}
+
+	return 0, fmt.Errorf("page tree kid obj#%d: unsupported Type %q", ir.ObjectNumber.Value(), pageType.Value())
+}
+
+func processPageTreeKids(
+	c context.Context,
+	objNr int,
+	kids types.Array,
+	process func(types.Object) (int, error),
+) (int, error) {
+	i := 0
+	for childIndex, o := range kids {
+		if err := c.Err(); err != nil {
+			return 0, err
+		}
+		if o == nil {
+			return 0, fmt.Errorf("page tree obj#%d: kid %d: nil object", objNr, childIndex+1)
+		}
+		j, err := process(o)
+		if err != nil {
+			return 0, fmt.Errorf("page tree obj#%d: kid %d: %w", objNr, childIndex+1, err)
+		}
+		i += j
+	}
+	return i, nil
+}
+
+func (xRefTable *XRefTable) insertBlankPagesDepth(
+	c context.Context,
+	parent *types.IndirectRef,
+	pAttrs *InheritedPageAttrs,
+	p *int,
+	selectedPages types.IntSet,
+	dim *types.Dim,
+	before bool,
+	depth int,
+	visit *PageTreeVisit,
+) (int, error) {
+	if err := c.Err(); err != nil {
+		return 0, err
+	}
+	if err := xRefTable.CheckRecursionDepth("page tree", depth); err != nil {
+		return 0, err
+	}
+	objNr := parent.ObjectNumber.Value()
+	if err := visit.Enter(objNr); err != nil {
+		return 0, fmt.Errorf("page tree obj#%d: %w", objNr, err)
+	}
+	defer visit.Leave(objNr)
+
+	d, err := xRefTable.DereferenceDict(*parent)
+	if err != nil {
+		return 0, fmt.Errorf("page tree obj#%d: dereference dict: %w", objNr, err)
+	}
+	if d == nil {
+		return 0, fmt.Errorf("page tree obj#%d: missing dict", objNr)
+	}
+
+	consolidateRes := false
+	if err = xRefTable.checkInheritedPageAttrs(d, pAttrs, consolidateRes); err != nil {
+		return 0, fmt.Errorf("page tree obj#%d: inherited attributes: %w", objNr, err)
+	}
+
+	o, found := d.Find("Kids")
+	if !found || o == nil {
+		return 0, fmt.Errorf("page tree obj#%d: missing Kids", objNr)
+	}
+	kids, ok := o.(types.Array)
+	if !ok {
+		return 0, fmt.Errorf("page tree obj#%d: Kids: expected array, got %T", objNr, o)
+	}
+
+	a := types.Array{}
+	ctx := blankPageInsertion{c, parent, pAttrs, p, selectedPages, dim, before, depth, visit}
+	i, err := processPageTreeKids(c, objNr, kids, func(o types.Object) (int, error) {
+		return xRefTable.appendBlankPagesForKid(&a, o, ctx)
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	d.Update("Kids", a)
+	d.Update("Count", types.Integer(i))
+
+	return i, nil
+}
+
+// InsertBlankPages inserts a blank page before or after each selected page and supports cancellation.
+func (xRefTable *XRefTable) InsertBlankPages(c context.Context, pages types.IntSet, dim *types.Dim, before bool) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	root, err := xRefTable.Pages()
+	if err != nil {
+		return fmt.Errorf("pages root: %w", err)
+	}
+	if root == nil {
+		return errors.New("missing pages root")
+	}
+
+	var inhPAttrs InheritedPageAttrs
+	p := 0
+
+	if _, err = xRefTable.insertBlankPagesDepth(
+		c, root, &inhPAttrs, &p, pages, dim, before, 0, NewPageTreeVisit(),
+	); err != nil {
+		return fmt.Errorf("page tree: %w", err)
+	}
+	return nil
+}
+
+func weaveInPage(c context.Context, ctx *Context, parent types.IndirectRef, pageNr int) (*types.IndirectRef, error) {
+	d1, indRef, inhPAttrs, err := ctx.PageDict(c, pageNr, false)
+	if err != nil {
+		return nil, err
+	}
+	materializeInheritedPageAttrs(d1, inhPAttrs)
+	d1["Parent"] = parent
+	return indRef, nil
+}
+
+// materializeInheritedPageAttrs preserves effective attributes before a page acquires new ancestors.
+// See PDF 2.0, 7.7.3.4 and Table 31.
+func materializeInheritedPageAttrs(d types.Dict, attrs *InheritedPageAttrs) {
+	if _, found := d["Rotate"]; !found {
+		d["Rotate"] = types.Integer(attrs.Rotate)
+	}
+	if _, found := d["MediaBox"]; !found {
+		d["MediaBox"] = attrs.MediaBox.Array()
+	}
+	if _, found := d["CropBox"]; !found {
+		crop := attrs.CropBox
+		if crop == nil {
+			crop = attrs.MediaBox
+		}
+		d["CropBox"] = crop.Array()
+	}
+	if _, found := d["Resources"]; !found && attrs.Resources != nil {
+		d["Resources"] = attrs.Resources.Clone()
+	}
+}
+
+// Weave in ctx's pages: for each page weave in the corresponding ctx page as long as there is one.
+func (xRefTable *XRefTable) insertPagesDepth(c context.Context, parent *types.IndirectRef, p *int, ctx *Context, depth int, visit *PageTreeVisit) (int, error) {
+	if err := xRefTable.checkPageTreeTraversal(c, depth); err != nil {
+		return 0, err
+	}
+
+	objNr := parent.ObjectNumber.Value()
+	if err := visit.Enter(objNr); err != nil {
+		return 0, err
+	}
+
+	defer visit.Leave(objNr)
+
+	d, err := xRefTable.DereferenceDict(*parent)
+	if err != nil {
+		return 0, err
+	}
+
+	kids := d.ArrayEntry("Kids")
+	if kids == nil {
+		return 0, nil
+	}
+
+	i := 0
+	a := types.Array{}
+
+	for _, o := range kids {
+		if err := contextutil.Check(c); err != nil {
+			return 0, err
+		}
+
+		if o == nil {
+			continue
+		}
+
+		// Dereference next page node dict.
+		ir, ok := o.(types.IndirectRef)
+		if !ok {
+			return 0, fmt.Errorf("insertPagesDepth: corrupt page node dict")
+		}
+
+		_, pageType, err := xRefTable.dereferencePageNodeDictType(ir)
+		if err != nil {
+			return 0, fmt.Errorf("page tree kid obj#%d: %w", ir.ObjectNumber.Value(), err)
+		}
+
+		switch pageType.Value() {
+
+		case "Pages":
+			// Recurse over sub pagetree.
+			j, err := xRefTable.insertPagesDepth(c, &ir, p, ctx, depth+1, visit)
+			if err != nil {
+				return 0, err
+			}
+			a = append(a, ir)
+			i += j
+
+		case "Page":
+			*p++
+			a = append(a, ir)
+			i++
+			if *p <= ctx.PageCount {
+				indRef1, err := weaveInPage(c, ctx, *parent, *p)
+				if err != nil {
+					return 0, err
+				}
+				a = append(a, *indRef1)
+				i++
+			}
+
+		}
+
+	}
+
+	d.Update("Kids", a)
+	d.Update("Count", types.Integer(i))
+
+	return i, nil
+}
+
+// InsertPages inserts pages from ctx into the page tree below parent.
+func (xRefTable *XRefTable) InsertPages(c context.Context, parent *types.IndirectRef, p *int, ctx *Context) (int, error) {
+	if err := contextutil.Check(c); err != nil {
+		return 0, err
+	}
+	return xRefTable.insertPagesDepth(c, parent, p, ctx, 0, NewPageTreeVisit())
+}
+
+// AppendPages appends pages from ctx to the page tree root starting at fromPageNr.
+func (xRefTable *XRefTable) AppendPages(c context.Context, rootPageIndRef *types.IndirectRef, fromPageNr int, ctx *Context) (int, error) {
+	if err := contextutil.Check(c); err != nil {
+		return 0, err
+	}
+	// Create an intermediary page node containing kids array with indRefs For all ctx Pages fromPageNr - end
+
+	rootPageDict, err := xRefTable.DereferenceDict(*rootPageIndRef)
+	if err != nil {
+		return 0, err
+	}
+
+	// Ensure page root with pages.
+	d := types.NewDict()
+	d.InsertName("Type", "Pages")
+
+	indRef, err := xRefTable.IndRefForNewObject(d)
+	if err != nil {
+		return 0, err
+	}
+
+	rootPageDict["Parent"] = *indRef
+
+	kids := types.Array{*rootPageIndRef}
+
+	count := ctx.PageCount - fromPageNr + 1
+
+	d1 := types.Dict(
+		map[string]types.Object{
+			"Type":   types.Name("Pages"),
+			"Parent": *indRef,
+			"Count":  types.Integer(count),
+		},
+	)
+
+	indRef1, err := xRefTable.IndRefForNewObject(d1)
+	if err != nil {
+		return 0, err
+	}
+
+	kids1 := types.Array{}
+
+	for i := fromPageNr; i <= ctx.PageCount; i++ {
+		d, indRef2, inhPAttrs, err := ctx.PageDict(c, i, false)
+		if err != nil {
+			return 0, err
+		}
+		materializeInheritedPageAttrs(d, inhPAttrs)
+		d["Parent"] = *indRef1
+		kids1 = append(kids1, *indRef2)
+	}
+	d1["Kids"] = kids1
+
+	d["Kids"] = append(kids, *indRef1)
+
+	rootPageCount, err := xRefTable.dereferencePageCount(rootPageDict, rootPageIndRef.ObjectNumber.Value())
+	if err != nil {
+		return 0, fmt.Errorf("page tree root Count: %w", err)
+	}
+	if rootPageCount == nil {
+		return 0, errors.New("page tree root: missing Count")
+	}
+	pageCount := *rootPageCount + count
+	d["Count"] = types.Integer(pageCount)
+
+	rootDict, err := xRefTable.Catalog()
+	if err != nil {
+		return 0, err
+	}
+
+	rootDict["Pages"] = *indRef
+
+	return pageCount, nil
+}
+
+// StreamDictIndRef creates a new stream dict for bb.
+func (xRefTable *XRefTable) StreamDictIndRef(bb []byte) (*types.IndirectRef, error) {
+	sd, _ := xRefTable.NewStreamDictForBuf(bb)
+	if err := sd.Encode(); err != nil {
+		return nil, err
+	}
+	return xRefTable.IndRefForNewObject(*sd)
+}
+
+func (xRefTable *XRefTable) insertContent(pageDict types.Dict, bb []byte) error {
+	sd, _ := xRefTable.NewStreamDictForBuf(bb)
+	if err := sd.Encode(); err != nil {
+		return err
+	}
+
+	indRef, err := xRefTable.IndRefForNewObject(*sd)
+	if err != nil {
+		return err
+	}
+
+	pageDict.Insert("Contents", *indRef)
+
+	return nil
+}
+
+func (xRefTable *XRefTable) appendToContentStream(sd *types.StreamDict, bb []byte) error {
+	err := xRefTable.DecodeStream(sd)
+	if err == filter.ErrUnsupportedFilter {
+		if log.InfoEnabled() {
+			log.Info.Println("unsupported filter: unable to patch content with watermark.")
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	sd.Content = append(sd.Content, ' ')
+	sd.Content = append(sd.Content, bb...)
+	return sd.Encode()
+}
+
+// AppendContent appends bb to pageDict's content stream.
+func (xRefTable *XRefTable) AppendContent(pageDict types.Dict, bb []byte) error {
+	obj, found := pageDict.Find("Contents")
+	if !found {
+		return xRefTable.insertContent(pageDict, bb)
+	}
+
+	var entry *XRefTableEntry
+	var objNr int
+
+	indRef, ok := obj.(types.IndirectRef)
+	if ok {
+		objNr = indRef.ObjectNumber.Value()
+		genNr := indRef.GenerationNumber.Value()
+		entry, _ = xRefTable.FindTableEntry(objNr, genNr)
+		obj = entry.Object
+	}
+
+	switch o := obj.(type) {
+
+	case types.StreamDict:
+		if err := xRefTable.appendToContentStream(&o, bb); err != nil {
+			return err
+		}
+		entry.Object = o
+
+	case types.Array:
+		// Get stream dict for last array element.
+		o1 := o[len(o)-1]
+		indRef, _ = o1.(types.IndirectRef)
+		objNr = indRef.ObjectNumber.Value()
+		genNr := indRef.GenerationNumber.Value()
+		entry, _ = xRefTable.FindTableEntry(objNr, genNr)
+		sd, _ := (entry.Object).(types.StreamDict)
+		if err := xRefTable.appendToContentStream(&sd, bb); err != nil {
+			return err
+		}
+		entry.Object = sd
+
+	default:
+		return fmt.Errorf("corrupt page \"Content\"")
+	}
+
+	return nil
+}
+
+// HasUsedGIDs returns true if fontName has recorded used glyph ids.
+func (xRefTable *XRefTable) HasUsedGIDs(fontName string) bool {
+	usedGIDs, ok := xRefTable.UsedGIDs[fontName]
+	return ok && len(usedGIDs) > 0
+}
+
+// NameRef returns the name reference map for nameType.
+func (xRefTable *XRefTable) NameRef(nameType string) NameMap {
+	nm, ok := xRefTable.NameRefs[nameType]
+	if !ok {
+		nm = NameMap{}
+		xRefTable.NameRefs[nameType] = nm
+		return nm
+	}
+	return nm
+}
+
+// RemoveSignature removes root signature state from xRefTable.
+func (xRefTable *XRefTable) RemoveSignature() {
+	// TODO Cleanup
+	if xRefTable.SignatureExist || xRefTable.AppendOnly {
+		// TODO enable incremental writing
+		if log.CLIEnabled() {
+			log.CLI.Println("removing signature...")
+		}
+		// root -> Perms -> UR3 -> = Sig dict
+		d1 := xRefTable.RootDict
+		delete(d1, "Perms")
+		d2 := xRefTable.Form
+		delete(d2, "SigFlags")
+		delete(d2, "XFA")
+		if xRefTable.Version() == V20 {
+			// deprecated in PDF 2.0
+			delete(d2, "NeedAppearances")
+		}
+		d1["AcroForm"] = d2
+		delete(d1, "Extensions")
+	}
+}
+
+func removePageAnnotationForSig(xRefTable *XRefTable, pIndRef, indRef types.IndirectRef) error {
+	d, err := xRefTable.DereferenceDict(pIndRef)
+	if err != nil {
+		return err
+	}
+
+	obj, ok := d.Find("Annots")
+	if !ok {
+		return nil
+	}
+
+	annots, err := xRefTable.DereferenceArray(obj)
+	if err != nil || len(annots) == 0 {
+		return nil
+	}
+
+	arr := types.Array{}
+
+	for _, v := range annots {
+		if v != indRef {
+			arr = append(arr, v)
+		}
+	}
+
+	if len(arr) == 0 {
+		delete(d, "Annots")
+		return nil
+	}
+
+	d["Annots"] = arr
+	return nil
+}
+
+func removeSigWidgetAnnot(xRefTable *XRefTable, indRef types.IndirectRef, d types.Dict) (bool, error) {
+	subType, _, err := xRefTable.DereferenceNameEntry(d, "Subtype")
+	if err != nil {
+		return false, err
+	}
+	if subType == nil || subType.Value() != "Widget" {
+		return false, nil
+	}
+	if _, ok := d.Find("Rect"); !ok {
+		return true, nil
+	}
+	p := d.IndirectRefEntry("P")
+	if p == nil {
+		return true, nil
+	}
+
+	return false, removePageAnnotationForSig(xRefTable, *p, indRef)
+}
+
+func removeSigAnnot(xRefTable *XRefTable, indRef types.IndirectRef, d types.Dict) error {
+	stop, err := removeSigWidgetAnnot(xRefTable, indRef, d)
+	if err != nil || stop {
+		return err
+	}
+
+	// The widget annotation may be a kid.
+
+	kids := d.ArrayEntry("Kids")
+	if len(kids) != 1 {
+		return nil
+	}
+
+	indRef1, ok := kids[0].(types.IndirectRef)
+	if !ok {
+		return nil
+	}
+
+	d1, err := xRefTable.DereferenceDict(indRef1)
+	if err != nil || len(d1) == 0 {
+		return nil
+	}
+
+	_, err = removeSigWidgetAnnot(xRefTable, indRef1, d1)
+
+	return err
+}
+
+// RemoveAllSignatures removes signature fields and related signature state from xRefTable.
+func (xRefTable *XRefTable) RemoveAllSignatures() error {
+	d := xRefTable.RootDict
+	delete(d, "DSS")
+	delete(d, "Legal")
+	delete(d, "Perm")
+	delete(d, "Extensions")
+
+	if xRefTable.Form == nil {
+		return nil
+	}
+
+	obj, ok := xRefTable.Form.Find("Fields")
+	if !ok || obj == nil {
+		delete(d, "AcroForm")
+		return nil
+	}
+
+	fields, err := xRefTable.DereferenceArray(obj)
+	if err != nil {
+		return err
+	}
+	if len(fields) == 0 {
+		delete(d, "AcroForm")
+		return nil
+	}
+
+	arr := types.Array{}
+
+	for _, v := range fields {
+		// NOTE validation has already taken care of the bad guys.
+		indRef, ok := v.(types.IndirectRef)
+		if !ok {
+			continue
+		}
+		d, err := xRefTable.DereferenceDict(indRef)
+		if err != nil {
+			continue
+		}
+		if len(d) == 0 {
+			continue
+		}
+		ft, _, err := xRefTable.DereferenceNameEntry(d, "FT")
+		if err != nil {
+			return err
+		}
+		if ft != nil && ft.Value() != "Sig" {
+			arr = append(arr, indRef)
+			continue
+		}
+
+		if err := removeSigAnnot(xRefTable, indRef, d); err != nil {
+			return err
+		}
+	}
+
+	if len(arr) == 0 {
+		// Only Sigfields encountered.
+		delete(d, "AcroForm")
+		return nil
+	}
+
+	xRefTable.Form["Fields"] = arr
+	delete(xRefTable.Form, "SigFlags")
+
+	return nil
+}
+
+// BindPrinterPreferences writes printer preferences into d.
+func (xRefTable *XRefTable) BindPrinterPreferences(vp *ViewerPreferences, d types.Dict) {
+	if vp.PrintArea != nil {
+		d.InsertName("PrintArea", vp.PrintArea.String())
+	}
+	if vp.PrintClip != nil {
+		d.InsertName("PrintClip", vp.PrintClip.String())
+	}
+	if vp.PrintScaling != nil {
+		d.InsertName("PrintScaling", vp.PrintScaling.String())
+	}
+	if vp.Duplex != nil {
+		d.InsertName("Duplex", vp.Duplex.String())
+	}
+	if vp.PickTrayByPDFSize != nil {
+		d.InsertBool("PickTrayByPDFSize", *vp.PickTrayByPDFSize)
+	}
+	if len(vp.PrintPageRange) > 0 {
+		d.Insert("PrintPageRange", types.NewIntegerArray(vp.PrintPageRange...))
+	}
+	if vp.NumCopies != nil {
+		d.Insert("NumCopies", *vp.NumCopies)
+	}
+	if len(vp.Enforce) > 0 {
+		d.Insert("Enforce", types.NewNameArray(vp.Enforce...))
+	}
+}
+
+// BindViewerPreferences writes viewer preferences into the root catalog.
+func (xRefTable *XRefTable) BindViewerPreferences() {
+	vp := xRefTable.ViewerPref
+	d := types.NewDict()
+
+	if vp.HideToolbar != nil {
+		d.InsertBool("HideToolbar", *vp.HideToolbar)
+	}
+	if vp.HideMenubar != nil {
+		d.InsertBool("HideMenubar", *vp.HideMenubar)
+	}
+	if vp.HideWindowUI != nil {
+		d.InsertBool("HideWindowUI", *vp.HideWindowUI)
+	}
+	if vp.FitWindow != nil {
+		d.InsertBool("FitWindow", *vp.FitWindow)
+	}
+	if vp.CenterWindow != nil {
+		d.InsertBool("CenterWindow", *vp.CenterWindow)
+	}
+	if vp.DisplayDocTitle != nil {
+		d.InsertBool("DisplayDocTitle", *vp.DisplayDocTitle)
+	}
+	if vp.NonFullScreenPageMode != nil {
+		pm := PageMode(*vp.NonFullScreenPageMode)
+		d.InsertName("NonFullScreenPageMode", pm.String())
+	}
+	if vp.Direction != nil {
+		d.InsertName("Direction", vp.Direction.String())
+	}
+	if vp.ViewArea != nil {
+		d.InsertName("ViewArea", vp.ViewArea.String())
+	}
+	if vp.ViewClip != nil {
+		d.InsertName("ViewClip", vp.ViewClip.String())
+	}
+
+	xRefTable.BindPrinterPreferences(vp, d)
+
+	xRefTable.RootDict["ViewerPreferences"] = d
+}
+
+// RectForArray returns a new rectangle for given Array.
+func (xRefTable *XRefTable) RectForArray(a types.Array) (*types.Rectangle, error) {
+	llx, err := xRefTable.DereferenceNumber(a[0])
+	if err != nil {
+		return nil, err
+	}
+
+	lly, err := xRefTable.DereferenceNumber(a[1])
+	if err != nil {
+		return nil, err
+	}
+
+	urx, err := xRefTable.DereferenceNumber(a[2])
+	if err != nil {
+		return nil, err
+	}
+
+	ury, err := xRefTable.DereferenceNumber(a[3])
+	if err != nil {
+		return nil, err
+	}
+
+	return types.NewRectangle(llx, lly, urx, ury), nil
+}

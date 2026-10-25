@@ -1,0 +1,1239 @@
+/*
+	Copyright 2021 The pdfcpu Authors.
+
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
+
+		http://www.apache.org/licenses/LICENSE-2.0
+
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/
+
+package primitives
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
+	"github.com/pdfcpu/pdfcpu/pkg/font"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
+	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/format"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+)
+
+// TextField defines a text form field and its visual appearance.
+type TextField struct {
+	pdf             *PDF
+	content         *Content
+	Label           *TextFieldLabel
+	ID              string
+	Tip             string
+	Value           string
+	Default         string
+	Position        [2]float64 `json:"pos"` // x,y
+	x, y            float64
+	Width           float64
+	Height          float64
+	Dx, Dy          float64
+	BoundingBox     *types.Rectangle `json:"-"`
+	Multiline       bool
+	Font            *FormFont
+	fontID          string
+	Margin          *Margin // applied to content box
+	Border          *Border
+	BackgroundColor string             `json:"bgCol"`
+	BgCol           *color.SimpleColor `json:"-"`
+	Alignment       string             `json:"align"` // "Left", "Center", "Right"
+	HorAlign        types.HAlignment   `json:"-"`
+	MaxLen          int                `json:"maxlen"`
+	Comb            bool               `json:"comb"`
+	RTL             bool
+	Tab             int
+	Locked          bool
+	Debug           bool
+	Hide            bool
+}
+
+// SetFontID sets font ID.
+func (tf *TextField) SetFontID(s string) {
+	tf.fontID = s
+}
+
+func (tf *TextField) validateID() error {
+	if tf.ID == "" {
+		return errors.New("missing field id")
+	}
+	if tf.pdf.DuplicateField(tf.ID) {
+		return fmt.Errorf("duplicate form field: %s", tf.ID)
+	}
+	tf.pdf.FieldIDs[tf.ID] = true
+	return nil
+}
+
+func (tf *TextField) validatePosition() error {
+	if tf.Position[0] < 0 || tf.Position[1] < 0 {
+		return fmt.Errorf("field: %s pos value < 0", tf.ID)
+	}
+	tf.x, tf.y = tf.Position[0], tf.Position[1]
+	return nil
+}
+
+func (tf *TextField) validateWidth() error {
+	if tf.Width == 0 {
+		return fmt.Errorf("field: %s width == 0", tf.ID)
+	}
+	return nil
+}
+
+func (tf *TextField) validateHeight() error {
+	if tf.Height < 0 {
+		return fmt.Errorf("field: %s height < 0", tf.ID)
+	}
+	return nil
+}
+
+func (tf *TextField) validateFont() error {
+	if tf.Font != nil {
+		tf.Font.pdf = tf.pdf
+		if err := tf.Font.validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (tf *TextField) validateMargin() error {
+	if tf.Margin != nil {
+		if err := tf.Margin.validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (tf *TextField) validateBorder() error {
+	if tf.Border != nil {
+		tf.Border.pdf = tf.pdf
+		if err := tf.Border.validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (tf *TextField) validateBackgroundColor() error {
+	if tf.BackgroundColor != "" {
+		sc, err := tf.pdf.parseColor(tf.BackgroundColor)
+		if err != nil {
+			return err
+		}
+		tf.BgCol = sc
+	}
+	return nil
+}
+
+func (tf *TextField) validateHorAlign() error {
+	tf.HorAlign = types.AlignLeft
+	if tf.Alignment != "" {
+		ha, err := types.ParseHorAlignment(tf.Alignment)
+		if err != nil {
+			return err
+		}
+		tf.HorAlign = ha
+	}
+	return nil
+}
+
+func (tf *TextField) validateLabel() error {
+	if tf.Label != nil {
+		tf.Label.pdf = tf.pdf
+		if err := tf.Label.validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (tf *TextField) validateTab() error {
+	if tf.Tab < 0 {
+		return fmt.Errorf("field: %s negative tab value", tf.ID)
+	}
+	if tf.Tab == 0 {
+		return nil
+	}
+	page := tf.content.page
+	if page.Tabs == nil {
+		page.Tabs = types.IntSet{}
+	} else {
+		if page.Tabs[tf.Tab] {
+			return fmt.Errorf("field: %s duplicate tab value %d", tf.ID, tf.Tab)
+		}
+	}
+	page.Tabs[tf.Tab] = true
+	return nil
+}
+
+func (tf *TextField) validate() error {
+	if err := tf.validateID(); err != nil {
+		return err
+	}
+
+	if err := tf.validatePosition(); err != nil {
+		return err
+	}
+
+	if err := tf.validateWidth(); err != nil {
+		return err
+	}
+
+	if err := tf.validateHeight(); err != nil {
+		return err
+	}
+
+	if err := tf.validateFont(); err != nil {
+		return err
+	}
+
+	if err := tf.validateMargin(); err != nil {
+		return err
+	}
+
+	if err := tf.validateBorder(); err != nil {
+		return err
+	}
+
+	if err := tf.validateBackgroundColor(); err != nil {
+		return err
+	}
+
+	if err := tf.validateHorAlign(); err != nil {
+		return err
+	}
+
+	if err := tf.validateLabel(); err != nil {
+		return err
+	}
+
+	return tf.validateTab()
+}
+
+func locateDA(ctx *model.Context, d types.Dict, inhDA *string) (*string, error) {
+	s, _, err := ctx.DereferenceStringEntry(d, "DA")
+	if err != nil {
+		return nil, fmt.Errorf("field entry DA: %w", err)
+	}
+	if s != nil {
+		return s, nil
+	}
+	if inhDA != nil {
+		return inhDA, nil
+	}
+	s, _, err = ctx.DereferenceStringEntry(ctx.Form, "DA")
+	if err != nil {
+		return nil, fmt.Errorf("form entry DA: %w", err)
+	}
+	return s, nil
+}
+
+func (tf *TextField) calcFontFromDA(c context.Context, ctx *model.Context, d types.Dict, da *string, needUTF8 bool,
+	fonts map[string]types.IndirectRef) (*types.IndirectRef, error) {
+	id, font, rtl, fontIndRef, err := calcFontDetailsFromDA(c, ctx, d, da, needUTF8, fonts)
+	if err != nil {
+		return nil, err
+	}
+
+	tf.fontID = id
+	tf.Font = font
+	tf.RTL = rtl
+
+	return fontIndRef, nil
+}
+
+func (tf *TextField) calcFont() error {
+	f, err := tf.content.calcInputFont(tf.Font)
+	if err != nil {
+		return err
+	}
+	tf.Font = f
+
+	if tf.Label != nil {
+		f, err = tf.content.calcLabelFont(tf.Label.Font)
+		if err != nil {
+			return err
+		}
+		tf.Label.Font = f
+	}
+
+	return nil
+}
+
+func (tf *TextField) margin(name string) *Margin {
+	return tf.content.namedMargin(name)
+}
+
+func (tf *TextField) calcMargin() (float64, float64, float64, float64, error) {
+	mTop, mRight, mBottom, mLeft := 0., 0., 0., 0.
+	if tf.Margin != nil {
+		m := tf.Margin
+		if m.Name != "" && m.Name[0] == '$' {
+			// use named margin
+			mName := m.Name[1:]
+			m0 := tf.margin(mName)
+			if m0 == nil {
+				return mTop, mRight, mBottom, mLeft, fmt.Errorf("unknown named margin %s", mName)
+			}
+			m.mergeIn(m0)
+		}
+		if m.Width > 0 {
+			mTop = m.Width
+			mRight = m.Width
+			mBottom = m.Width
+			mLeft = m.Width
+		} else {
+			mTop = m.Top
+			mRight = m.Right
+			mBottom = m.Bottom
+			mLeft = m.Left
+		}
+	}
+	return mTop, mRight, mBottom, mLeft, nil
+}
+
+func (tf *TextField) labelPos(labelHeight, w, g float64) (float64, float64) {
+	var x, y float64
+	bb, horAlign := tf.BoundingBox, tf.Label.HorAlign
+
+	switch tf.Label.relPos {
+
+	case types.RelPosLeft:
+		x = bb.LL.X - g
+		if horAlign == types.AlignLeft {
+			x -= w
+			if x < 0 {
+				x = 0
+			}
+		}
+		if tf.Multiline {
+			y = bb.UR.Y - labelHeight
+		} else {
+			y = bb.LL.Y
+		}
+
+	case types.RelPosRight:
+		x = bb.UR.X + g
+		if horAlign == types.AlignRight {
+			x += w
+		}
+		if tf.Multiline {
+			y = bb.UR.Y - labelHeight
+		} else {
+			y = bb.LL.Y
+		}
+
+	case types.RelPosTop:
+		y = bb.UR.Y + g
+		x = bb.LL.X
+		if horAlign == types.AlignRight {
+			x += bb.Width()
+		} else if horAlign == types.AlignCenter {
+			x += bb.Width() / 2
+		}
+
+	case types.RelPosBottom:
+		y = bb.LL.Y - g - labelHeight
+		x = bb.LL.X
+		if horAlign == types.AlignRight {
+			x += bb.Width()
+		} else if horAlign == types.AlignCenter {
+			x += bb.Width() / 2
+		}
+
+	}
+
+	return x, y
+}
+
+func (tf *TextField) renderBackground(w io.Writer, bgCol, boCol *color.SimpleColor, boWidth, width, height float64) {
+	if bgCol != nil || (boCol != nil && boWidth > 0) {
+		fmt.Fprint(w, "q ")
+		if bgCol != nil {
+			fmt.Fprintf(w, "%.2f %.2f %.2f rg 0 0 %.2f %.2f re f ", bgCol.R, bgCol.G, bgCol.B, width, height)
+		}
+		if boCol != nil && boWidth > 0 {
+			fmt.Fprintf(w, "%.2f %.2f %.2f RG %.2f w %.2f %.2f %.2f %.2f re s ",
+				boCol.R, boCol.G, boCol.B, boWidth, boWidth/2, boWidth/2, width-boWidth, height-boWidth)
+		}
+		fmt.Fprint(w, "Q ")
+	}
+}
+
+func textFieldRunes(s string, rtl bool) []rune {
+	rr := []rune(s)
+	if rtl {
+		for i, j := 0, len(rr)-1; i < j; i, j = i+1, j-1 {
+			rr[i], rr[j] = rr[j], rr[i]
+		}
+	}
+	return rr
+}
+
+func (tf *TextField) renderCombLine(c context.Context, xRefTable *model.XRefTable, x, y float64, rr []rune,
+	embed bool, buf io.Writer) error {
+	f := tf.Font
+	limit := min(len(rr), tf.MaxLen)
+	dx := tf.BoundingBox.Width() / float64(tf.MaxLen)
+	for j := range limit {
+		s, err := f.prepareBytes(c, xRefTable, string(rr[j]), embed, false)
+		if err != nil {
+			return fmt.Errorf("comb character %d: %w", j+1, err)
+		}
+		fmt.Fprintf(buf, "%.2f %.2f Td (%s) Tj ", x, y, s)
+		y = 0
+		x = dx
+	}
+	return nil
+}
+
+func (tf *TextField) renderLines(
+	c context.Context,
+	xRefTable *model.XRefTable,
+	repo *font.Repository,
+	boWidth, lh, w, y float64,
+	lines []string,
+	buf io.Writer,
+) error {
+	f := tf.Font
+	cjk := pdffont.CJK(f.Script, f.Lang)
+	for i := 0; i < len(lines); i++ {
+		s := lines[i]
+		lineBB, err := repo.TextBoundingBox(c, s, f.Name, f.Size)
+		if err != nil {
+			return fmt.Errorf("line %d: %w", i+1, err)
+		}
+		rr := textFieldRunes(s, f.RTL())
+		if !(tf.Comb && tf.MaxLen > 0 && tf.HorAlign == types.AlignLeft) {
+			s, err = f.prepareBytes(c, xRefTable, s, !cjk, f.RTL())
+			if err != nil {
+				return fmt.Errorf("line %d: %w", i+1, err)
+			}
+		}
+		x := alignedFieldTextX(tf.HorAlign, w, lineBB.Width(), boWidth)
+		fmt.Fprint(buf, "BT ")
+		if i == 0 {
+			fmt.Fprintf(buf, "/%s %s Tf %.2f %.2f %.2f RG %.2f %.2f %.2f rg ",
+				tf.fontID, formatFontSize(f.Size),
+				f.col.R, f.col.G, f.col.B,
+				f.col.R, f.col.G, f.col.B)
+		}
+
+		if tf.Comb && tf.MaxLen > 0 && tf.HorAlign == types.AlignLeft {
+			x = 0.5
+			if err := tf.renderCombLine(c, xRefTable, x, y, rr, !cjk, buf); err != nil {
+				return fmt.Errorf("line %d: %w", i+1, err)
+			}
+			fmt.Fprint(buf, "ET ")
+		} else {
+			fmt.Fprintf(buf, "%.2f %.2f Td (%s) Tj ET ", x, y, s)
+		}
+
+		y -= lh
+	}
+	return nil
+}
+
+func textFieldLines(
+	c context.Context,
+	xRefTable *model.XRefTable,
+	s, fontName string,
+	fontSize float64,
+	multiline bool,
+	width float64,
+) ([]string, error) {
+	if font.IsCoreFont(fontName) && utf8.ValidString(s) {
+		s = model.DecodeUTF8ToByte(s)
+	}
+	if multiline {
+		lines, err := xRefTable.WordWrapFloat(c, s, fontName, fontSize, width)
+		if err != nil {
+			return nil, err
+		}
+		return lines, nil
+	}
+	s = strings.ReplaceAll(s, "\\n", "\n")
+	return []string{strings.ReplaceAll(s, "\n", " ")}, nil
+}
+
+func (tf *TextField) renderN(c context.Context, xRefTable *model.XRefTable) ([]byte, error) {
+	w, h := tf.BoundingBox.Width(), tf.BoundingBox.Height()
+	repo := xRefTable.FontRepository()
+	bgCol := tf.BgCol
+	boWidth, boCol := tf.calcBorder()
+	buf := new(bytes.Buffer)
+
+	tf.renderBackground(buf, bgCol, boCol, boWidth, w, h)
+
+	f := tf.Font
+
+	if !tf.Multiline && f.Size > h {
+		size, err := fontSizeForLineHeight(c, repo, f.Name, h)
+		if err != nil {
+			return nil, fmt.Errorf("text field text: %w", err)
+		}
+		f.Size = size
+	}
+
+	s := tf.Value
+	if s == "" {
+		s = tf.Default
+	}
+
+	lines, err := textFieldLines(c, xRefTable, s, f.Name, f.Size, tf.Multiline, w-2*boWidth)
+	if err != nil {
+		return nil, fmt.Errorf("text field text: %w", err)
+	}
+
+	fmt.Fprint(buf, "/Tx BMC ")
+
+	lh, descent, err := fontLineMetrics(c, repo, f.Name, f.Size)
+	if err != nil {
+		return nil, fmt.Errorf("text field text: %w", err)
+	}
+	y := (tf.BoundingBox.Height()-lh)/2 + descent
+	if tf.Multiline {
+		y = tf.BoundingBox.Height() - lh
+	}
+
+	if len(lines) > 0 {
+		fmt.Fprintf(buf, "q 1 1 %.1f %.1f re W n ", w-2, h-2)
+	}
+
+	if err := tf.renderLines(c, xRefTable, repo, boWidth, lh, w, y, lines, buf); err != nil {
+		return nil, fmt.Errorf("text field text: %w", err)
+	}
+
+	if len(lines) > 0 {
+		fmt.Fprint(buf, "Q ")
+	}
+
+	fmt.Fprint(buf, "EMC ")
+
+	if boCol != nil && boWidth > 0 {
+		fmt.Fprintf(buf, "q %.2f %.2f %.2f RG %.2f w %.2f %.2f %.2f %.2f re s Q ",
+			boCol.R, boCol.G, boCol.B, boWidth-1, boWidth/2, boWidth/2, w-boWidth, h-boWidth)
+	}
+
+	return buf.Bytes(), nil
+}
+
+// RefreshN regenerates and stores the field's normal appearance stream and supports cancellation.
+func (tf *TextField) RefreshN(c context.Context, xRefTable *model.XRefTable, indRef *types.IndirectRef) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	bb, err := tf.renderN(c, xRefTable)
+	if err != nil {
+		return err
+	}
+
+	entry, _ := xRefTable.FindTableEntryForIndRef(indRef)
+	sd, _ := entry.Object.(types.StreamDict)
+
+	sd.Content = bb
+	if err := sd.Encode(); err != nil {
+		return err
+	}
+
+	entry.Object = sd
+
+	return nil
+}
+
+func (tf *TextField) irN(fonts model.FontMap) (*types.IndirectRef, error) {
+	bb, err := tf.renderN(tf.pdf.ctx, tf.pdf.XRefTable)
+	if err != nil {
+		return nil, err
+	}
+
+	sd, err := tf.pdf.XRefTable.NewStreamDictForBuf(bb)
+	if err != nil {
+		return nil, err
+	}
+
+	sd.InsertName("Type", "XObject")
+	sd.InsertName("Subtype", "Form")
+	sd.InsertInt("FormType", 1)
+	sd.Insert("BBox", types.NewNumberArray(0, 0, tf.BoundingBox.Width(), tf.BoundingBox.Height()))
+	sd.Insert("Matrix", types.NewNumberArray(1, 0, 0, 1, 0, 0))
+
+	f := tf.Font
+
+	fName := f.Name
+	if pdffont.CJK(tf.Font.Script, tf.Font.Lang) {
+		fName = "cjk:" + fName
+	}
+
+	ir, err := tf.pdf.ensureFont(tf.fontID, fName, tf.Font.Lang, fonts)
+	if err != nil {
+		return nil, err
+	}
+
+	d := types.Dict(
+		map[string]types.Object{
+			"Font": types.Dict(
+				map[string]types.Object{
+					tf.fontID: *ir,
+				},
+			),
+		},
+	)
+
+	sd.Insert("Resources", d)
+
+	if err := sd.Encode(); err != nil {
+		return nil, err
+	}
+
+	return tf.pdf.XRefTable.IndRefForNewObject(*sd)
+}
+
+func (tf *TextField) calcBorder() (boWidth float64, boCol *color.SimpleColor) {
+	if tf.Border == nil {
+		return 0, nil
+	}
+	return tf.Border.calc()
+}
+
+func (tf *TextField) prepareFF() FieldFlags {
+	ff := FieldDoNotSpellCheck
+	if tf.Multiline {
+		// If FieldMultiline set, the field may contain multiple lines of text;
+		// if clear, the field’s text shall be restricted to a single line.
+		// Adobe Reader ok, Mac Preview nope
+		ff += FieldMultiline
+	} else {
+		// If FieldDoNotScroll set, the field shall not scroll horizontally for single-line fields or vertically for
+		// multiple-line fields.
+		// to accommodate more text than fits within its annotation rectangle.
+		// Once the field is full, no further text shall be accepted for interactive form filling;
+		// for non- interactive form filling, the filler should take care
+		// not to add more character than will visibly fit in the defined area.
+		// Adobe Reader ok, Mac Preview nope :(
+		ff += FieldDoNotScroll
+	}
+
+	if tf.Locked {
+		ff += FieldReadOnly
+	}
+
+	if tf.Comb {
+		ff += FieldComb
+	}
+
+	return ff
+}
+
+func (tf *TextField) handleBorderAndMK(d types.Dict) {
+	bgCol := tf.BgCol
+	if bgCol == nil {
+		bgCol = tf.content.page.bgCol
+		if bgCol == nil {
+			bgCol = tf.pdf.bgCol
+		}
+	}
+	tf.BgCol = bgCol
+
+	boWidth, boCol := tf.calcBorder()
+
+	if bgCol != nil || boCol != nil {
+		appCharDict := types.Dict{}
+		if bgCol != nil {
+			appCharDict["BG"] = bgCol.Array()
+		}
+		if boCol != nil && tf.Border.Width > 0 {
+			appCharDict["BC"] = boCol.Array()
+		}
+		d["MK"] = appCharDict
+	}
+
+	if boWidth > 0 {
+		d["Border"] = types.NewNumberArray(0, 0, boWidth)
+	}
+}
+
+func (tf *TextField) prepareDict(fonts model.FontMap) (types.Dict, error) {
+	pdf := tf.pdf
+
+	id, err := types.EscapedUTF16String(tf.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	ff := tf.prepareFF()
+
+	d := types.Dict(
+		map[string]types.Object{
+			"Type":    types.Name("Annot"),
+			"Subtype": types.Name("Widget"),
+			"FT":      types.Name("Tx"),
+			"Rect":    tf.BoundingBox.Array(),
+			"F":       types.Integer(model.AnnPrint),
+			"Ff":      types.Integer(ff),
+			"Q":       types.Integer(tf.HorAlign),
+			"T":       types.StringLiteral(*id),
+		},
+	)
+
+	if tf.Tip != "" {
+		tu, err := types.EscapedUTF16String(tf.Tip)
+		if err != nil {
+			return nil, err
+		}
+		d["TU"] = types.StringLiteral(*tu)
+	}
+
+	if tf.MaxLen > 0 {
+		d["MaxLen"] = types.Integer(tf.MaxLen)
+	}
+
+	tf.handleBorderAndMK(d)
+
+	if tf.Value != "" {
+		if tf.MaxLen > 0 && utf8.RuneCountInString(tf.Value) > tf.MaxLen {
+			return nil, fmt.Errorf("field overflow at %s, maxLen = %d", tf.ID, tf.MaxLen)
+		}
+		s, err := types.EscapedUTF16String(tf.Value)
+		if err != nil {
+			return nil, err
+		}
+		d["V"] = types.StringLiteral(*s)
+	}
+
+	if tf.Default != "" {
+		s, err := types.EscapedUTF16String(tf.Default)
+		if err != nil {
+			return nil, err
+		}
+		d["DV"] = types.StringLiteral(*s)
+		if tf.Value == "" {
+			d["V"] = types.StringLiteral(*s)
+		}
+	}
+
+	if pdf.InheritedDA != "" {
+		d["DA"] = types.StringLiteral(pdf.InheritedDA)
+	}
+
+	f := tf.Font
+	fCol := f.col
+
+	fontID, err := pdf.ensureFormFont(f)
+	if err != nil {
+		return d, err
+	}
+	tf.fontID = fontID
+
+	da := fmt.Sprintf("/%s %s Tf %.2f %.2f %.2f rg", fontID, formatFontSize(f.Size), fCol.R, fCol.G, fCol.B)
+	// Note: Mac Preview does not honour inherited "DA"
+	d["DA"] = types.StringLiteral(da)
+
+	irN, err := tf.irN(fonts)
+	if err != nil {
+		return nil, err
+	}
+
+	d["AP"] = types.Dict(map[string]types.Object{"N": *irN})
+
+	return d, nil
+}
+
+func (tf *TextField) bbox() *types.Rectangle {
+	if tf.Label == nil {
+		return tf.BoundingBox.Clone()
+	}
+
+	l := tf.Label
+	var r *types.Rectangle
+	x := l.td.X
+
+	switch l.td.HAlign {
+	case types.AlignCenter:
+		x -= float64(l.Width) / 2
+	case types.AlignRight:
+		x -= float64(l.Width)
+	}
+
+	r = types.RectForWidthAndHeight(x, l.td.Y, float64(l.Width), l.height)
+
+	return model.CalcBoundingBoxForRects(tf.BoundingBox, r)
+}
+
+func (tf *TextField) prepareRectLL(mTop, mRight, mBottom, mLeft float64) (float64, float64) {
+	return tf.content.calcPosition(tf.x, tf.y, tf.Dx, tf.Dy, mTop, mRight, mBottom, mLeft)
+}
+
+func (tf *TextField) prepLabel(p *model.Page, pageNr int, fonts model.FontMap) error {
+	if tf.Label == nil {
+		return nil
+	}
+
+	l := tf.Label
+	pdf := tf.pdf
+
+	t := "Default"
+	if l.Value != "" {
+		t, _ = format.Text(l.Value, pdf.TimestampFormat, pageNr, pdf.pageCount())
+	}
+
+	w := float64(l.Width)
+	g := float64(l.Gap)
+
+	f := l.Font
+	fontName, fontLang, col := f.Name, f.Lang, f.col
+
+	id, err := tf.pdf.idForFontName(fontName, fontLang, p.Fm, fonts, pageNr)
+	if err != nil {
+		return err
+	}
+
+	td := model.TextDescriptor{
+		Text:     t,
+		FontName: fontName,
+		Embed:    true,
+		FontKey:  id,
+		FontSize: f.Size,
+		Scale:    1.,
+		ScaleAbs: true,
+		RTL:      l.RTL,
+	}
+
+	if col != nil {
+		td.StrokeCol, td.FillCol = *col, *col
+	}
+
+	if l.BgCol != nil {
+		td.ShowBackground, td.ShowTextBB, td.BackgroundCol = true, true, *l.BgCol
+	}
+
+	bb, err := model.WriteMultiLine(
+		tf.pdf.ctx, tf.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td,
+	)
+	if err != nil {
+		return fmt.Errorf("text field label: %w", err)
+	}
+	l.height = bb.Height()
+	if bb.Width() > w {
+		w = bb.Width()
+		l.Width = int(bb.Width())
+	}
+
+	td.X, td.Y = tf.labelPos(l.height, w, g)
+
+	if !tf.Multiline &&
+		(bb.Height() < tf.BoundingBox.Height()) &&
+		(l.relPos == types.RelPosLeft || l.relPos == types.RelPosRight) {
+		td.MBot = (tf.BoundingBox.Height() - bb.Height()) / 2
+		td.MTop = td.MBot
+	}
+
+	td.HAlign, td.VAlign = l.HorAlign, types.AlignBottom
+
+	l.td = &td
+
+	return nil
+}
+
+func (tf *TextField) prepForRender(p *model.Page, pageNr int, fonts model.FontMap) error {
+	mTop, mRight, mBottom, mLeft, err := tf.calcMargin()
+	if err != nil {
+		return err
+	}
+
+	x, y := tf.prepareRectLL(mTop, mRight, mBottom, mLeft)
+
+	if err := tf.calcFont(); err != nil {
+		return err
+	}
+
+	var boWidth int
+	if tf.Border != nil {
+		if tf.Border.col != nil {
+			boWidth = tf.Border.Width
+		}
+	}
+
+	h := tf.Font.Size*1.2 + 2*float64(boWidth)
+
+	if tf.Multiline {
+		if tf.Height == 0 {
+			return fmt.Errorf("field: %s height == 0", tf.ID)
+		}
+		h = tf.Height
+	}
+
+	if tf.Width < 0 {
+		// Extend width to maxWidth.
+		if tf.HorAlign == types.AlignLeft || tf.HorAlign == types.AlignCenter {
+			r := tf.content.Box().CroppedCopy(0)
+			r.LL.X += mLeft
+			r.LL.Y += mBottom
+			r.UR.X -= mRight
+			r.UR.Y -= mTop
+			tf.Width = r.Width() - tf.x
+		}
+	}
+
+	tf.BoundingBox = types.RectForWidthAndHeight(x, y, tf.Width, h)
+
+	return tf.prepLabel(p, pageNr, fonts)
+}
+
+func (tf *TextField) doRender(p *model.Page, fonts model.FontMap) error {
+	d, err := tf.prepareDict(fonts)
+	if err != nil {
+		return err
+	}
+
+	ann := model.FieldAnnotation{Dict: d}
+	if tf.Tab > 0 {
+		p.AnnotTabs[tf.Tab] = ann
+	} else {
+		p.Annots = append(p.Annots, ann)
+	}
+
+	if tf.Label != nil {
+		if _, err := model.WriteColumn(tf.pdf.ctx, tf.pdf.XRefTable, p.Buf, p.MediaBox, nil, *tf.Label.td, 0); err != nil {
+			return fmt.Errorf("text field label: %w", err)
+		}
+	}
+
+	if tf.Debug || tf.pdf.Debug {
+		tf.pdf.highlightPos(p.Buf, tf.BoundingBox.LL.X, tf.BoundingBox.LL.Y, tf.content.Box())
+	}
+
+	return nil
+}
+
+func (tf *TextField) render(p *model.Page, pageNr int, fonts model.FontMap) error {
+	if err := tf.prepForRender(p, pageNr, fonts); err != nil {
+		return err
+	}
+
+	return tf.doRender(p, fonts)
+}
+
+func calcMKColor(ctx *model.Context, d types.Dict, key string) (*color.SimpleColor, error) {
+	o, found := d.Find(key)
+	if !found {
+		return nil, nil
+	}
+	a, err := ctx.DereferenceArray(o)
+	if err != nil {
+		return nil, fmt.Errorf("widget MK.%s: %w", key, err)
+	}
+	if len(a) != 3 {
+		return nil, nil
+	}
+
+	var rgb [3]float64
+	for i, o := range a {
+		rgb[i], err = ctx.DereferenceNumber(o)
+		if err != nil {
+			return nil, fmt.Errorf("widget MK.%s[%d]: %w", key, i, err)
+		}
+	}
+
+	return &color.SimpleColor{R: float32(rgb[0]), G: float32(rgb[1]), B: float32(rgb[2])}, nil
+}
+
+func calcColsFromMK(ctx *model.Context, d types.Dict) (*color.SimpleColor, *color.SimpleColor, error) {
+	if o, found := d.Find("MK"); found {
+		d1, err := ctx.DereferenceDict(o)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(d1) > 0 {
+			bgCol, err := calcMKColor(ctx, d1, "BG")
+			if err != nil {
+				return nil, nil, err
+			}
+			boCol, err := calcMKColor(ctx, d1, "BC")
+			if err != nil {
+				return nil, nil, err
+			}
+			return bgCol, boCol, nil
+		}
+	}
+
+	return nil, nil, nil
+}
+
+func calcBorderWidth(ctx *model.Context, d types.Dict) (int, error) {
+	o, found := d.Find("Border")
+	if !found {
+		return 0, nil
+	}
+	a, err := ctx.DereferenceArray(o)
+	if err != nil {
+		return 0, fmt.Errorf("widget Border: %w", err)
+	}
+	if len(a) != 3 {
+		return 0, nil
+	}
+	width, err := ctx.DereferenceNumber(a[2])
+	if err != nil {
+		return 0, fmt.Errorf("widget Border[2]: %w", err)
+	}
+	return int(width), nil
+}
+
+func hasUTF(s string) bool {
+	for _, char := range s {
+		if char > 0xFF {
+			return true
+		}
+	}
+	return false
+}
+
+// NewTextField returns a new text field and supports cancellation.
+func NewTextField(c context.Context, ctx *model.Context, d types.Dict, v string, multiLine, comb bool, maxLen int, da *string, fontIndRef *types.IndirectRef, fonts map[string]types.IndirectRef) (*TextField, *types.IndirectRef, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
+	}
+
+	tf := &TextField{Value: v, Multiline: multiLine, Comb: comb}
+
+	i, _, err := ctx.XRefTable.DereferenceIntegerEntry(d, "MaxLen") // Inheritable!
+	if err != nil {
+		return nil, nil, err
+	}
+	if i != nil {
+		maxLen = i.Value()
+	}
+	tf.MaxLen = maxLen
+
+	obj, _ := d.Find("Rect")
+	arr, _ := ctx.DereferenceArray(obj)
+	bb, err := ctx.RectForArray(arr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	tf.BoundingBox = types.RectForDim(bb.Width(), bb.Height())
+
+	if fontIndRef == nil {
+		if fontIndRef, err = tf.calcFontFromDA(c, ctx, d, da, hasUTF(v), fonts); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	tf.HorAlign = types.AlignLeft
+	q, _, err := ctx.XRefTable.DereferenceIntegerEntry(d, "Q")
+	if err != nil {
+		return nil, nil, err
+	}
+	if q != nil {
+		tf.HorAlign = types.HAlignment(q.Value())
+	}
+
+	bgCol, boCol, err := calcColsFromMK(ctx, d)
+	if err != nil {
+		return nil, nil, err
+	}
+	tf.BgCol = bgCol
+
+	var b Border
+	boWidth, err := calcBorderWidth(ctx, d)
+	if err != nil {
+		return nil, nil, err
+	}
+	if boWidth > 0 {
+		b.Width = boWidth
+		b.col = boCol
+	}
+	tf.Border = &b
+
+	return tf, fontIndRef, nil
+}
+
+func renderTextFieldAP(c context.Context, ctx *model.Context, d types.Dict, v string, multiLine, comb bool, maxLen int,
+	da *string, fonts map[string]types.IndirectRef) error {
+	if ap := d.DictEntry("AP"); ap != nil {
+		if err := ctx.DeleteObject(c, ap); err != nil {
+			return err
+		}
+	}
+
+	tf, fontIndRef, err := NewTextField(c, ctx, d, v, multiLine, comb, maxLen, da, nil, fonts)
+	if err != nil {
+		return err
+	}
+
+	bb, err := tf.renderN(c, ctx.XRefTable)
+	if err != nil {
+		return err
+	}
+
+	irN, err := NewForm(ctx.XRefTable, bb, tf.fontID, fontIndRef, tf.BoundingBox)
+	if err != nil {
+		return err
+	}
+
+	d["AP"] = types.Dict(map[string]types.Object{"N": *irN})
+
+	return nil
+}
+
+func fontAttrs(c context.Context, ctx *model.Context, fd types.Dict, fontID, text string,
+	fonts map[string]types.IndirectRef) (string, string, string, string, *types.IndirectRef, error) {
+	var prefix, name, lang, script string
+	var err error
+
+	fontIndRef := fd.IndirectRefEntry(fontID)
+	if fontIndRef == nil {
+		// create utf8 font * save as indRef
+		fontID, name, lang, script, fontIndRef, err = ensureUTF8FormFont(c, ctx, fonts)
+		if err != nil {
+			return "", "", "", "", nil, err
+		}
+		fd[fontID] = *fontIndRef
+	} else {
+		objNr := int(fontIndRef.ObjectNumber)
+		fontDict, err := ctx.DereferenceDict(*fontIndRef)
+		if err != nil {
+			return "", "", "", "", nil, err
+		}
+		if fontDict == nil {
+			// create utf8 font * save as indRef
+			fontID, name, lang, script, fontIndRef, err = ensureUTF8FormFont(c, ctx, fonts)
+			if err != nil {
+				return "", "", "", "", nil, err
+			}
+			fd[fontID] = *fontIndRef
+		} else {
+			prefix, name, err = pdffont.Name(ctx.XRefTable, fontDict, objNr)
+			if err != nil {
+				return "", "", "", "", nil, err
+			}
+			supported, err := ctx.XRefTable.FontRepository().SupportedFont(c, name)
+			if err != nil {
+				return "", "", "", "", nil, fmt.Errorf("font %s: load metrics: %w", name, err)
+			}
+			if !supported || (len(prefix) == 0 && hasUTF(text)) {
+				// create utf8 font * save as indRef
+				fontID, name, lang, script, fontIndRef, err = ensureUTF8FormFont(c, ctx, fonts)
+				if err != nil {
+					return "", "", "", "", nil, err
+				}
+				fd[fontID] = *fontIndRef
+			} else {
+				fonts[name] = *fontIndRef
+			}
+		}
+	}
+
+	return fontID, name, lang, script, fontIndRef, nil
+}
+
+func textFieldAppearanceFontResources(ctx *model.Context, d types.Dict) (*types.IndirectRef, types.Dict, error) {
+	ap := d.DictEntry("AP")
+	if ap == nil {
+		return nil, nil, nil
+	}
+	irN := ap.IndirectRefEntry("N")
+	if irN == nil {
+		return nil, nil, nil
+	}
+	sd, _, err := ctx.DereferenceStreamDict(*irN)
+	if err != nil {
+		return nil, nil, err
+	}
+	obj, ok := sd.Find("Resources")
+	if !ok {
+		return nil, nil, nil
+	}
+	d1, err := ctx.DereferenceDict(obj)
+	if err != nil {
+		return nil, nil, err
+	}
+	return irN, d1.DictEntry("Font"), nil
+}
+
+// EnsureTextFieldAP ensures a text field appearance and supports cancellation.
+func EnsureTextFieldAP(c context.Context, ctx *model.Context, d types.Dict, text string, multiLine, comb bool, maxLen int, da *string, fonts map[string]types.IndirectRef) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	irN, fd, err := textFieldAppearanceFontResources(ctx, d)
+	if err != nil {
+		return err
+	}
+	if irN == nil || fd == nil {
+		return renderTextFieldAP(c, ctx, d, text, multiLine, comb, maxLen, da, fonts)
+	}
+
+	s, err := locateDA(ctx, d, da)
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		return errors.New("textfield missing \"DA\"")
+	}
+
+	fontID, f, err := fontFromDA(*s)
+	if err != nil {
+		return err
+	}
+
+	fontID, name, lang, script, fontIndRef, err := fontAttrs(c, ctx, fd, fontID, text, fonts)
+	if err != nil {
+		return err
+	}
+
+	fillFont := formFontIndRef(ctx.XRefTable, fontID) != nil
+
+	tf, _, err := NewTextField(c, ctx, d, text, multiLine, comb, maxLen, da, fontIndRef, fonts)
+	if err != nil {
+		return err
+	}
+
+	f.Name = name
+	f.Lang = lang
+	f.Script = script
+	f.FillFont = fillFont
+	if err := applyFormFontEncoding(ctx.XRefTable, &f, fontIndRef); err != nil {
+		return fmt.Errorf("font %s Encoding: %w", name, err)
+	}
+
+	tf.fontID = fontID
+	tf.Font = &f
+	tf.RTL = pdffont.RTL(lang)
+
+	supported, err := ctx.XRefTable.FontRepository().SupportedFont(c, name)
+	if err != nil {
+		return fmt.Errorf("font %s: load metrics: %w", name, err)
+	}
+	if !supported {
+		return fmt.Errorf("font unavailable: %s", name)
+	}
+
+	bb, err := tf.renderN(c, ctx.XRefTable)
+	if err != nil {
+		return err
+	}
+
+	return updateForm(ctx.XRefTable, bb, irN)
+}

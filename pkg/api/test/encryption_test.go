@@ -1,0 +1,300 @@
+/*
+Copyright 2020 The pdf Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+)
+
+func listPermissions(t *testing.T, fileName string) ([]string, error) {
+	t.Helper()
+
+	msg := "listPermissions"
+
+	f, err := os.Open(fileName)
+	if err != nil {
+		t.Fatalf("%s open: %v\n", msg, err)
+	}
+	defer f.Close()
+
+	conf := model.NewDefaultConfiguration()
+	return api.PermissionsList(t.Context(), f, conf)
+}
+
+func confForAlgorithm(aes bool, keyLength int, upw, opw string) *model.Configuration {
+	if aes {
+		return model.NewAESConfiguration(upw, opw, keyLength)
+	}
+	return model.NewRC4Configuration(upw, opw, keyLength)
+}
+
+func setPermissions(t *testing.T, aes bool, keyLength int, msg, outFile string) {
+	t.Helper()
+	// Set all permissions of encrypted file w/o passwords should fail.
+	conf := confForAlgorithm(aes, keyLength, "", "")
+	conf.Permissions = model.PermissionsAll
+	if err := api.SetPermissionsFile(t.Context(), outFile, "", conf); err == nil {
+		t.Fatalf("%s: set all permissions w/o pw for %s\n", msg, outFile)
+	}
+
+	// Set all permissions of encrypted file with user password should fail.
+	conf = confForAlgorithm(aes, keyLength, "upw", "")
+	conf.Permissions = model.PermissionsAll
+	if err := api.SetPermissionsFile(t.Context(), outFile, "", conf); err == nil {
+		t.Fatalf("%s: set all permissions w/o opw for %s\n", msg, outFile)
+	}
+
+	// Set all permissions of encrypted file with owner password should fail.
+	conf = confForAlgorithm(aes, keyLength, "", "opw")
+	conf.Permissions = model.PermissionsAll
+	if err := api.SetPermissionsFile(t.Context(), outFile, "", conf); err == nil {
+		t.Fatalf("%s: set all permissions w/o both pws for %s\n", msg, outFile)
+	}
+
+	// Set all permissions of encrypted file using both passwords.
+	conf = confForAlgorithm(aes, keyLength, "upw", "opw")
+	conf.Permissions = model.PermissionsAll
+	if err := api.SetPermissionsFile(t.Context(), outFile, "", conf); err != nil {
+		t.Fatalf("%s: set all permissions for %s: %v\n", msg, outFile, err)
+	}
+
+	// List permissions using the owner password.
+	conf = confForAlgorithm(aes, keyLength, "", "opw")
+	p, err := api.GetPermissionsFile(t.Context(), outFile, conf)
+	if err != nil {
+		t.Fatalf("%s: get permissions %s: %v\n", msg, outFile, err)
+	}
+
+	// Ensure permissions all.
+	if p == nil || uint16(*p) != uint16(model.PermissionsAll) {
+		t.Fatal()
+	}
+
+}
+
+func testEncryption(t *testing.T, fileName string, alg string, keyLength int) {
+	t.Helper()
+	msg := "testEncryption"
+
+	aes := alg == "aes"
+	inFile := filepath.Join(inDir, fileName)
+	outFile := filepath.Join(outDir, "test.pdf")
+	t.Log(inFile)
+
+	p, err := api.GetPermissionsFile(t.Context(), inFile, nil)
+	if err != nil {
+		t.Fatalf("%s: get permissions %s: %v\n", msg, inFile, err)
+	}
+	// Ensure full access.
+	if p != nil {
+		t.Fatal()
+	}
+
+	// Encrypt file.
+	conf := confForAlgorithm(aes, keyLength, "upw", "opw")
+	if err := api.EncryptFile(t.Context(), inFile, outFile, conf); err != nil {
+		t.Fatalf("%s: encrypt %s: %v\n", msg, outFile, err)
+	}
+
+	// List permissions of encrypted file w/o passwords should fail.
+	if list, err := listPermissions(t, outFile); err == nil {
+		t.Fatalf("%s: list permissions w/o pw %s: %v\n", msg, outFile, list)
+	}
+
+	// List permissions of encrypted file using the user password.
+	conf = confForAlgorithm(aes, keyLength, "upw", "")
+	p, err = api.GetPermissionsFile(t.Context(), outFile, conf)
+	if err != nil {
+		t.Fatalf("%s: get permissions %s: %v\n", msg, inFile, err)
+	}
+	// Ensure permissions none.
+	if p == nil || uint16(*p) != uint16(model.PermissionsNone) {
+		t.Fatal()
+	}
+
+	// List permissions of encrypted file using the owner password.
+	conf = confForAlgorithm(aes, keyLength, "", "opw")
+	p, err = api.GetPermissionsFile(t.Context(), outFile, conf)
+	if err != nil {
+		t.Fatalf("%s: get permissions %s: %v\n", msg, inFile, err)
+	}
+	// Ensure permissions none.
+	if p == nil || uint16(*p) != uint16(model.PermissionsNone) {
+		t.Fatal()
+	}
+
+	setPermissions(t, aes, keyLength, msg, outFile)
+
+	// Change user password.
+	conf = confForAlgorithm(aes, keyLength, "upw", "opw")
+	if err = api.ChangeUserPasswordFile(t.Context(), outFile, "", "upw", "upwNew", conf); err != nil {
+		t.Fatalf("%s: change upw %s: %v\n", msg, outFile, err)
+	}
+
+	// Change owner password.
+	conf = confForAlgorithm(aes, keyLength, "upwNew", "opw")
+	if err = api.ChangeOwnerPasswordFile(t.Context(), outFile, "", "opw", "opwNew", conf); err != nil {
+		t.Fatalf("%s: change opw %s: %v\n", msg, outFile, err)
+	}
+
+	// Decrypt file using both passwords.
+	conf = confForAlgorithm(aes, keyLength, "upwNew", "opwNew")
+	if err = api.DecryptFile(t.Context(), outFile, "", conf); err != nil {
+		t.Fatalf("%s: decrypt %s: %v\n", msg, outFile, err)
+	}
+
+	// Validate decrypted file.
+	if err = api.ValidateFile(t.Context(), outFile, nil, nil); err != nil {
+		t.Fatalf("%s: validate %s: %v\n", msg, outFile, err)
+	}
+}
+
+// TestEncryption verifies encryption.
+func TestEncryption(t *testing.T) {
+	for _, fileName := range []string{
+		"5116.DCT_Filter.pdf",
+		"adobe_errata.pdf",
+	} {
+		testEncryption(t, fileName, "rc4", 40)
+		testEncryption(t, fileName, "rc4", 128)
+		testEncryption(t, fileName, "aes", 40)
+		testEncryption(t, fileName, "aes", 128)
+		testEncryption(t, fileName, "aes", 256)
+	}
+}
+
+// TestPDF20Encryption verifies pdf20 encryption.
+func TestPDF20Encryption(t *testing.T) {
+	// PDF 2.0 encryption assumes aes/256.
+	for _, fileName := range []string{
+		"i277.pdf",
+		"imageWithBPC.pdf",
+		"pageLevelOutputIntent.pdf",
+		"SimplePDF2.0.pdf",
+		"utf8stringAndAnnotation.pdf",
+		"utf8test.pdf",
+		"viaIncrementalSave.pdf",
+		"withOffsetStart.pdf",
+	} {
+		testEncryption(t, filepath.Join("pdf20", fileName), "aes", 256)
+	}
+}
+
+// TestSetPermissions verifies set permissions.
+func TestSetPermissions(t *testing.T) {
+	msg := "TestSetPermissions"
+	inFile := filepath.Join(inDir, "5116.DCT_Filter.pdf")
+	outFile := filepath.Join(outDir, "out.pdf")
+
+	conf := confForAlgorithm(true, 256, "upw", "opw")
+	permNew := model.PermissionsNone | model.PermissionPrintRev2 | model.PermissionPrintRev3
+	conf.Permissions = permNew
+
+	if err := api.EncryptFile(t.Context(), inFile, outFile, conf); err != nil {
+		t.Fatalf("%s: encrypt %s: %v\n", msg, outFile, err)
+	}
+
+	conf = confForAlgorithm(true, 256, "upw", "opw")
+	p, err := api.GetPermissionsFile(t.Context(), outFile, conf)
+	if err != nil {
+		t.Fatalf("%s: get permissions %s: %v\n", msg, outFile, err)
+	}
+	if p == nil {
+		t.Fatalf("%s: missing permissions", msg)
+	}
+	if uint16(*p) != uint16(permNew) {
+		t.Fatalf("%s: got: %d want: %d", msg, uint16(*p), uint16(permNew))
+	}
+}
+
+// passwordFromFile reads an exact password value from a temporary secret file.
+func passwordFromFile(t *testing.T, value string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// TestEncryptionFileSecrets verifies encryption and password changes using caller-loaded file secrets.
+func TestEncryptionFileSecrets(t *testing.T) {
+	for _, algorithm := range []struct {
+		name string
+		aes  bool
+		bits int
+	}{
+		{"RC4-128", false, 128}, {"AES-128", true, 128}, {"AES-256", true, 256},
+	} {
+		t.Run(algorithm.name, func(t *testing.T) {
+			testEncryptionFileSecrets(t, algorithm.aes, algorithm.bits)
+		})
+	}
+}
+
+func testEncryptionFileSecrets(t *testing.T, aes bool, bits int) {
+	t.Helper()
+	user := passwordFromFile(t, "file-user")
+	owner := passwordFromFile(t, "file-owner")
+	newUser := passwordFromFile(t, "file-new-user")
+	newOwner := passwordFromFile(t, "file-new-owner")
+	encrypted := filepath.Join(t.TempDir(), "encrypted.pdf")
+	conf := confForAlgorithm(aes, bits, user, owner)
+	if err := api.EncryptFile(t.Context(), filepath.Join(inDir, "5116.DCT_Filter.pdf"), encrypted, conf); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.ValidateFile(t.Context(), encrypted, nil, nil); err == nil {
+		t.Fatal("encrypted document accepted without passwords")
+	}
+	if err := api.ChangeUserPasswordFile(t.Context(), encrypted, "", user, newUser, conf); err != nil {
+		t.Fatal(err)
+	}
+	conf = confForAlgorithm(aes, bits, newUser, owner)
+	if err := api.ChangeOwnerPasswordFile(t.Context(), encrypted, "", owner, newOwner, conf); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.ValidateFile(t.Context(), encrypted, confForAlgorithm(aes, bits, user, owner), nil); err == nil {
+		t.Fatal("replaced passwords still accepted")
+	}
+	conf = confForAlgorithm(aes, bits, newUser, newOwner)
+	if err := api.ValidateFile(t.Context(), encrypted, conf, nil); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(t.TempDir(), "plain.pdf")
+	if err := api.DecryptFile(t.Context(), encrypted, plain, conf); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.ValidateFile(t.Context(), plain, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	empty := passwordFromFile(t, "")
+	if err := api.ChangeUserPasswordFile(t.Context(), encrypted, "", newUser, empty, conf); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.ValidateFile(t.Context(), encrypted, nil, nil); err != nil {
+		t.Fatalf("empty user-password file did not remove the open password: %v", err)
+	}
+}

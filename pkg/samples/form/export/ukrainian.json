@@ -1,0 +1,181 @@
+{
+	"header": {
+		"source": "ukrainian.pdf",
+		"version": "pdfcpu v0.16.3",
+		"creation": "2026-10-25 16:05:54 CST",
+		"producer": "pdfcpu v0.16.3"
+	},
+	"forms": [
+		{
+			"textfield": [
+				{
+					"pages": [
+						1
+					],
+					"id": "38",
+					"name": "firstName1",
+					"altname": "ім'я",
+					"default": "Володимир",
+					"value": "Джекі",
+					"multiline": false,
+					"locked": false
+				},
+				{
+					"pages": [
+						1
+					],
+					"id": "34",
+					"name": "lastName1",
+					"altname": "прізвище",
+					"value": "лань",
+					"multiline": false,
+					"locked": false
+				},
+				{
+					"pages": [
+						1
+					],
+					"id": "39",
+					"name": "note1",
+					"altname": "Причина",
+					"value": "Це зразок тексту.\nЦе наступний рядок.",
+					"multiline": true,
+					"locked": false
+				}
+			],
+			"datefield": [
+				{
+					"pages": [
+						1
+					],
+					"id": "35",
+					"name": "dob1",
+					"altname": "dd.mm.yyyy",
+					"format": "dd.mm.yyyy",
+					"default": "05.12.1992",
+					"value": "31.12.1999",
+					"locked": false
+				}
+			],
+			"checkbox": [
+				{
+					"pages": [
+						1
+					],
+					"id": "36",
+					"name": "cb11",
+					"altname": "Пошук Google",
+					"default": false,
+					"value": true,
+					"locked": false
+				},
+				{
+					"pages": [
+						1
+					],
+					"id": "29",
+					"name": "cb12",
+					"altname": "Пошук на Github",
+					"default": false,
+					"value": false,
+					"locked": false
+				},
+				{
+					"pages": [
+						1
+					],
+					"id": "30",
+					"name": "cb13",
+					"altname": "Golang Weekly",
+					"default": false,
+					"value": false,
+					"locked": false
+				},
+				{
+					"pages": [
+						1
+					],
+					"id": "31",
+					"name": "cb14",
+					"altname": "Побратим Гофер",
+					"default": false,
+					"value": false,
+					"locked": false
+				},
+				{
+					"pages": [
+						1
+					],
+					"id": "32",
+					"name": "cb15",
+					"altname": "Інший",
+					"default": false,
+					"value": false,
+					"locked": false
+				}
+			],
+			"radiobuttongroup": [
+				{
+					"pages": [
+						1
+					],
+					"id": "17",
+					"name": "gender1",
+					"altname": "Стать",
+					"options": [
+						"жіноча",
+						"чоловічий",
+						"небінарний"
+					],
+					"default": "жіноча",
+					"value": "небінарний",
+					"locked": false
+				}
+			],
+			"combobox": [
+				{
+					"pages": [
+						1
+					],
+					"id": "33",
+					"name": "city12",
+					"altname": "Місто",
+					"editable": false,
+					"options": [
+						"Київ",
+						"Маріуполь",
+						"Севастополь"
+					],
+					"default": "Маріуполь",
+					"value": "Севастополь",
+					"locked": false
+				}
+			],
+			"listbox": [
+				{
+					"pages": [
+						1
+					],
+					"id": "37",
+					"name": "city11",
+					"altname": "Улюблене місто",
+					"multi": true,
+					"options": [
+						"Сан Франциско",
+						"Сан-Паулу",
+						"Відень"
+					],
+					"defaults": [
+						"Відень",
+						"Сан-Паулу"
+					],
+					"values": [
+						"Сан Франциско",
+						"Відень"
+					],
+					"locked": false
+				}
+			]
+		}
+	]
+}
