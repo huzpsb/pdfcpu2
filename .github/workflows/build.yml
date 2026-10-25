@@ -11,6 +11,11 @@ jobs:
   build:
     name: Build Multi-Platform
     runs-on: ubuntu-latest
+    # Only pushes whose head commit message starts with "ci:" trigger a build.
+    # pull_request and workflow_dispatch are always allowed.
+    if: >-
+      github.event_name != 'push' ||
+      startsWith(github.event.head_commit.message, 'ci:')
 
     strategy:
       matrix:
