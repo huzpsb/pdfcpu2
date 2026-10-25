@@ -1,0 +1,68 @@
+name: Build Go Artifacts
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Multi-Platform
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - { os: windows, arch: amd64, extension: .exe }
+          - { os: windows, arch: arm64, extension: .exe }
+          - { os: linux,   arch: amd64, extension: "" }
+          - { os: linux,   arch: arm64, extension: "" }
+          - { os: darwin,  arch: amd64, extension: "" }
+          - { os: darwin,  arch: arm64, extension: "" }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install UPX
+        run: |
+          UPX_VERSION=v5.2.0
+          curl -sSL "https://github.com/upx/upx/releases/download/${UPX_VERSION}/upx-${UPX_VERSION#v}-amd64_linux.tar.xz" -o upx.tar.xz
+          tar -xf upx.tar.xz
+          sudo mv upx-${UPX_VERSION#v}-amd64_linux/upx /usr/local/bin/
+          rm -rf upx.tar.xz upx-${UPX_VERSION#v}-amd64_linux
+          upx --version
+
+      - name: Remove Windows-only object for non-Windows builds
+        if: matrix.os != 'windows'
+        run: rm -f win_icon.syso
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build Artifact
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY_NAME="pdfcpu2-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}"
+          go build -v -ldflags="-s -w" -o "dist/$BINARY_NAME" ./cmd/pdfcpu2
+          upx -9 "dist/$BINARY_NAME" || echo "UPX compression failed or not supported for this architecture, continuing..."
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfcpu2-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
