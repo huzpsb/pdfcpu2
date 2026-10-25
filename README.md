@@ -26,7 +26,7 @@ That's a complete scans → searchable PDF → plain text pipeline in one execut
   | Qwen3-VL-235B | 38.3 | 74.9 |
 
   Source: [PP-OCRv6 model card](https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_small_rec_onnx) — and unlike the VLMs, it costs nothing per page.
-- **PDFBox-grade text extraction.** `extract -m text` is aligned with Apache PDFBox's default extractor, tuned via differential testing against PDFBox over a corpus of **1200+ real-world Chinese PDFs spanning different eras**.
+- **PDFBox-grade text extraction.** `extract -m text` is aligned with Apache PDFBox's default extractor, tuned via differential testing against PDFBox over a corpus of **1200+ real-world Chinese PDFs spanning different eras** — from decades-old generators to modern ones.
 - **CJK friendly.** ToUnicode CMaps (incl. Type42, array-form `bfrange`), embedded TrueType cmaps, legacy GBK/Big5, Adobe-GB1/CNS1 CID fallbacks, Latin-1 last resort — plus PP-OCR models trained on Chinese + English.
 - **Idempotent OCR.** Every processed image is marked; re-running `ocr` only touches new content. Text is placed as an invisible layer mapped through each image's page transform — so selection lands exactly on the visible glyphs.
 - **Pipeline native.** stdin/stdout streaming (`-`), page selection, JSON output, `context.Context` cancellation in the Go API.
