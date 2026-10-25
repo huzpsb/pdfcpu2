@@ -26,11 +26,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/internal/inputlimit"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/internal/inputlimit"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/color"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 var (

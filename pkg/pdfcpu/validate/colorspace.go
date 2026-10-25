@@ -23,10 +23,10 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 var errMissingColorSpaceObject = errors.New("color space: missing object")

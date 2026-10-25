@@ -22,7 +22,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
 )
 
 func logDebugError(s string, err error) error {

@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pdfcpu/pdfcpu/internal/netutil"
+	"github.com/huzpsb/pdfcpu2/internal/netutil"
 )
 
 const (

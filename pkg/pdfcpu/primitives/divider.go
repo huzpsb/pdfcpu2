@@ -19,10 +19,10 @@ package primitives
 import (
 	"fmt"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/color"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/draw"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // Divider is a positioned separator between two regions from p to q.

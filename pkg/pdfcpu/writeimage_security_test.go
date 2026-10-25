@@ -26,8 +26,8 @@ import (
 	"testing"
 
 	"github.com/hhrutter/tiff"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // TestRenderDeviceCMYKRejectsShortSoftMaskedImage checks sample length before applying a soft mask.

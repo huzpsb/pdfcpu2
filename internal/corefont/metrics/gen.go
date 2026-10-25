@@ -238,7 +238,7 @@ const header = `// Copyright 2019 The pdfcpu Authors.
 package metrics
 
 import (	
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 `
 

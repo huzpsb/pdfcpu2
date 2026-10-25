@@ -16,7 +16,7 @@ limitations under the License.
 
 package cli
 
-import "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+import "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 
 // AddWatermarksCommand creates a new command to add watermarks to a file.
 func AddWatermarksCommand(inFile, outFile string, pageSelection []string, wm *model.Watermark, conf *model.Configuration) *Command {

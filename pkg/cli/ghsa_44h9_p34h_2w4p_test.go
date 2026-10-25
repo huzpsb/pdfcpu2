@@ -17,7 +17,7 @@ limitations under the License.
 package cli
 
 // GHSA-44h9-p34h-2w4p: preserve local-image CLI workflows without changing the caller's API configuration.
-// https://github.com/pdfcpu/pdfcpu/security/advisories/GHSA-44h9-p34h-2w4p
+// https://github.com/huzpsb/pdfcpu2/security/advisories/GHSA-44h9-p34h-2w4p
 
 import (
 	"bytes"
@@ -28,8 +28,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 func ghsaCLIWrite(t *testing.T, name string, data []byte) {

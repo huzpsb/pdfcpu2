@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // TestAssessmentScopeZeroValueIsLocal locks down backwards-compatible local

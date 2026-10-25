@@ -21,7 +21,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
 )
 
 // TestStampUserFont verifies stamp user font.

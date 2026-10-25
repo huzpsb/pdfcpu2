@@ -24,7 +24,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pdfcpu/pdfcpu/internal/fileutil"
+	"github.com/huzpsb/pdfcpu2/internal/fileutil"
 )
 
 const bundledDefaultCertificates = true

@@ -19,9 +19,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/cli"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/cli"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // TestListBoxesCommand verifies list boxes command.

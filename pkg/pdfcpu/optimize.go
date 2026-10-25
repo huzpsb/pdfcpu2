@@ -26,12 +26,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/pkg/log"
-	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/primitives"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
+	pdffont "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/font"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/primitives"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // keptObjectIndRef preserves the generation of the retained object (7.3.10).

@@ -22,7 +22,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // TestReadInputLimit verifies per-PDF size enforcement before parsing and inclusive boundaries.

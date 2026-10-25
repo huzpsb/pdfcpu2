@@ -1,6 +1,6 @@
-# pdfcpu (personally maintained fork)
+# pdfcpu2 (personally maintained fork)
 
-This is a hard fork of [pdfcpu](https://github.com/pdfcpu/pdfcpu).
+This is a hard fork of [pdfcpu](https://github.com/pdfcpu/pdfcpu), published as **pdfcpu2**.
 
 **For documentation, CLI usage and PDF processing concepts, please refer to the upstream project: https://github.com/pdfcpu/pdfcpu** (docs site: https://pdfcpu.io). This README only covers what is specific to this fork.
 
@@ -25,8 +25,8 @@ Extract plain text from PDFs. Output behavior is aligned with Apache PDFBox's de
 CLI:
 
 ```
-pdfcpu extract -m text inFile outFile|-
-pdfcpu extract -m text -p 1-3 inFile -
+pdfcpu2 extract -m text inFile outFile|-
+pdfcpu2 extract -m text -p 1-3 inFile -
 ```
 
 Go API:
@@ -48,7 +48,7 @@ Supported: ToUnicode CMaps (incl. Type42 and array-form `bfrange`), embedded Tru
 
 ```
 go mod vendor   # vendor/ is not committed; regenerate before building
-go build ./cmd/pdfcpu
+go build ./cmd/pdfcpu2
 go test ./...
 ```
 

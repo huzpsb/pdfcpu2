@@ -1,4 +1,4 @@
-/*
+﻿/*
 Copyright 2025 The pdfcpu Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,11 +22,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/cli"
-	"github.com/pdfcpu/pdfcpu/pkg/font"
-	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/cli"
+	"github.com/huzpsb/pdfcpu2/pkg/font"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +49,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "pdfcpu",
+	Use:   "pdfcpu2",
 	Short: "PDF tooling for Go and the command line",
 	Long: `pdfcpu provides command-line tools for working with PDF files.
 It is built on a Go API for direct PDF control.`,

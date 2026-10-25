@@ -33,10 +33,10 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/internal/fileutil"
-	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/sanitize"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/internal/fileutil"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/sanitize"
 )
 
 const (

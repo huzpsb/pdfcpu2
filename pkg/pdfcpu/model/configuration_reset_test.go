@@ -24,7 +24,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/font"
+	"github.com/huzpsb/pdfcpu2/pkg/font"
 )
 
 func replaceResetConfigurationSetting(t *testing.T, path, old, replacement string) {

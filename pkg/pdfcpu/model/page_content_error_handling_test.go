@@ -23,8 +23,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 func corruptZlibContent(t *testing.T, content []byte) []byte {

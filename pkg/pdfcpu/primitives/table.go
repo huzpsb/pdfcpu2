@@ -22,12 +22,12 @@ import (
 	"math"
 	"strings"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/format"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/matrix"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/color"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/draw"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/format"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/matrix"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // TableHeader defines table header values and their layout.

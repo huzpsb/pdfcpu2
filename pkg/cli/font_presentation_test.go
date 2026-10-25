@@ -23,9 +23,9 @@ import (
 	stdlog "log"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/font"
-	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/font"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
 )
 
 func TestInstallFontsCommandRendersStructuredWarnings(t *testing.T) {

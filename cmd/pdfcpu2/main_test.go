@@ -31,11 +31,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/cli"
-	pdfcpuLog "github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/cli"
+	pdfcpuLog "github.com/huzpsb/pdfcpu2/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/fault"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 type commandOutputErrorWriter struct {

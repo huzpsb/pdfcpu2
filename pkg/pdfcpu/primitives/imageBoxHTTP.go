@@ -24,7 +24,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/pdfcpu/pdfcpu/internal/netutil"
+	"github.com/huzpsb/pdfcpu2/internal/netutil"
 )
 
 func imageBoxRemoteURL(s string) (*url.URL, bool, error) {

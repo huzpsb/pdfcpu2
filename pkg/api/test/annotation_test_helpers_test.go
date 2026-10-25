@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	pdffont "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/font"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // Functions needed to create a test.pdf that gets used for validation testing (see process_test.go)

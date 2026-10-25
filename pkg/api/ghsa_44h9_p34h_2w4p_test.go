@@ -17,7 +17,7 @@ limitations under the License.
 package api
 
 // GHSA-44h9-p34h-2w4p: untrusted create/form input must not read images outside the configured root.
-// https://github.com/pdfcpu/pdfcpu/security/advisories/GHSA-44h9-p34h-2w4p
+// https://github.com/huzpsb/pdfcpu2/security/advisories/GHSA-44h9-p34h-2w4p
 
 import (
 	"bytes"
@@ -31,8 +31,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/form"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/form"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 const ghsaImageTemplate = `{"pages":{"1":{"content":{"textfield":[{"id":"name","pos":[10,10],"width":100,"font":{"name":"Helvetica","size":12}}]}}}}`

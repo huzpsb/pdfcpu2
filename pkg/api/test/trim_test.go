@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
 )
 
 // TestTrim verifies trim.

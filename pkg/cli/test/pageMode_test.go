@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/cli"
+	"github.com/huzpsb/pdfcpu2/pkg/cli"
 )
 
 // TestPageMode verifies page mode.

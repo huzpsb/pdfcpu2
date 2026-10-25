@@ -23,8 +23,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/fault"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 func TestDispatchRejectsNilContext(t *testing.T) {

@@ -21,7 +21,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
 )
 
 // parseTTFTables fills fd from the standard set of TrueType tables.

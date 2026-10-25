@@ -24,8 +24,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // ErrExpectedDict signals that a PDF object is not a dictionary.

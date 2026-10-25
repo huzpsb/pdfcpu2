@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // ConfigurationSource identifies how the configuration root was selected.

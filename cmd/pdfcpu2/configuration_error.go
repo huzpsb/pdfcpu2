@@ -20,7 +20,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
 )
 
 type configurationSchemaCommandError struct {

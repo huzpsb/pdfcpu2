@@ -23,9 +23,9 @@ import (
 	"strings"
 	"testing"
 
-	pdfcpuLog "github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	pdfcpuLog "github.com/huzpsb/pdfcpu2/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 func type1FontTestObjects(t *testing.T, version model.Version, fontName string) (*model.Context, types.Dict) {

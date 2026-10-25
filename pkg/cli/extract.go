@@ -16,7 +16,7 @@ limitations under the License.
 
 package cli
 
-import "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+import "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 
 // ExtractImagesCommand creates a new command to extract embedded images.
 func ExtractImagesCommand(inFile string, outDir string, pageSelection []string, conf *model.Configuration) *Command {

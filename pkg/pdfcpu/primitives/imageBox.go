@@ -28,15 +28,15 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/matrix"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/color"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/draw"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/matrix"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
-var imageBoxUserAgent = "pdfcpu/" + model.VersionStr + " (+https://github.com/pdfcpu/pdfcpu)"
+var imageBoxUserAgent = "pdfcpu/" + model.VersionStr + " (+https://github.com/huzpsb/pdfcpu2)"
 
 // ImageData represents a more direct way for providing image data for form filling scenarios.
 type ImageData struct {

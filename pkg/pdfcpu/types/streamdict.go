@@ -23,8 +23,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
-	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
 )
 
 // PDFFilter represents a PDF stream filter object.

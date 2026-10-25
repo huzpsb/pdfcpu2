@@ -26,8 +26,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/safemath"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/safemath"
 )
 
 // Portions of this code are based on ideas of image/png: reader.go:readImagePass

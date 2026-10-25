@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // TestCreateOfflineSkipsRemoteImageDNS verifies configuration reaches the JSON image renderer.

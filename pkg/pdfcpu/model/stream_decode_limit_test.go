@@ -21,8 +21,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 func decodeLimitTestStream(t *testing.T, filtered, cached bool) types.StreamDict {

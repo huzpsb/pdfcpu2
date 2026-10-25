@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // TestParsePageDimRejectsInvalidDimensions verifies finite, positive parser inputs.

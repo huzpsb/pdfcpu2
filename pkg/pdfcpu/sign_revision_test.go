@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // TestSignatureReaderRevisionReporting verifies production ordinals preserve current and historical evidence.

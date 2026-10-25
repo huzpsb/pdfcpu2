@@ -23,7 +23,7 @@ import (
 	"testing"
 
 	"github.com/hhrutter/tiff"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 func cmykExtractionPDF(bpc int, pixels []byte) []byte {

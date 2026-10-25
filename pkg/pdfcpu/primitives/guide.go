@@ -19,8 +19,8 @@ package primitives
 import (
 	"io"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/draw"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // Guide represents horizontal and vertical lines at (x,y) for layout purposes.

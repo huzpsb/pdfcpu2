@@ -33,9 +33,9 @@ import (
 	"strings"
 
 	"github.com/hhrutter/tiff"
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/safemath"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/safemath"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 	_ "golang.org/x/image/webp"
 )
 

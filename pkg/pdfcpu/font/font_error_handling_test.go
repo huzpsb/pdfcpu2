@@ -27,9 +27,9 @@ import (
 	"strings"
 	"testing"
 
-	corefont "github.com/pdfcpu/pdfcpu/pkg/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	corefont "github.com/huzpsb/pdfcpu2/pkg/font"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 func fontDictionaryContextCalls(c context.Context) []func() error {

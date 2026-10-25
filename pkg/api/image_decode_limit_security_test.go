@@ -23,8 +23,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 func flateImageData(t *testing.T, data []byte) []byte {

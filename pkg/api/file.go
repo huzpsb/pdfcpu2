@@ -24,9 +24,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/internal/fileutil"
-	"github.com/pdfcpu/pdfcpu/internal/inputlimit"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/internal/fileutil"
+	"github.com/huzpsb/pdfcpu2/internal/inputlimit"
 )
 
 type contextReader struct {

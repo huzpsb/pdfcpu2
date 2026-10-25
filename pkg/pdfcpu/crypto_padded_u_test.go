@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // TestAES256OwnerPasswordWithPaddedU checks that excess U bytes do not affect owner authentication.

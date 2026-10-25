@@ -21,10 +21,10 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/pdfcpu/pdfcpu/internal/corefont/metrics"
-	"github.com/pdfcpu/pdfcpu/pkg/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/internal/corefont/metrics"
+	"github.com/huzpsb/pdfcpu2/pkg/font"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 type simpleFontEncoding struct {

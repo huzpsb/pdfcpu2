@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 const configurationRootEnv = "PDFCPU_CONFIG_ROOT"

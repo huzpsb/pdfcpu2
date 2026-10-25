@@ -17,7 +17,7 @@ limitations under the License.
 package primitives
 
 // GHSA-44h9-p34h-2w4p: prevent local image path and symlink escapes before reading file contents.
-// https://github.com/pdfcpu/pdfcpu/security/advisories/GHSA-44h9-p34h-2w4p
+// https://github.com/huzpsb/pdfcpu2/security/advisories/GHSA-44h9-p34h-2w4p
 
 import (
 	"errors"
@@ -26,7 +26,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 func TestGHSA44h9P34h2w4pSymlinks(t *testing.T) {

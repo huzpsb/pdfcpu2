@@ -16,7 +16,7 @@ limitations under the License.
 
 package cli
 
-import "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+import "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 
 // ListCertificatesCommand creates a new command to list installed certificates.
 func ListCertificatesCommand(json bool, conf *model.Configuration) *Command {

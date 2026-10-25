@@ -12,6 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-module github.com/pdfcpu/pdfcpu/pkg/testdata
+module github.com/huzpsb/pdfcpu2/pkg/testdata
 
 go 1.25.0

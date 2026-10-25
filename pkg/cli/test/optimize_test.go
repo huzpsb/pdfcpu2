@@ -20,8 +20,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/cli"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/cli"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 func optimizeFile(t *testing.T, fileName string, conf *model.Configuration) error {

@@ -21,7 +21,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
 )
 
 func TestDecodePreservesSoleJBIG2Stream(t *testing.T) {

@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // Angle conversion factors.

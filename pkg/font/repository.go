@@ -24,9 +24,9 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/internal/corefont/metrics"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/internal/corefont/metrics"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // Repository provides immutable, lazily loaded font metrics for one user-font directory.

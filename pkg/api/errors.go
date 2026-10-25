@@ -19,9 +19,9 @@ package api
 import (
 	"errors"
 
-	"github.com/pdfcpu/pdfcpu/pkg/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/font"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // VersionRequirementError reports an element requiring a newer PDF version.

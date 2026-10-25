@@ -19,8 +19,8 @@ package cli
 import (
 	"io"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // Command represents an execution context.

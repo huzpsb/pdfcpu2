@@ -17,8 +17,8 @@ limitations under the License.
 package cli
 
 import (
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // NUpCommand creates a new command to render PDFs or image files in n-up fashion.

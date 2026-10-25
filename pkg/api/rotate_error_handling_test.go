@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu"
 )
 
 // TestRotateArgumentValidation verifies public rotate argument validation.

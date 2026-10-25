@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 func treePolicyLeaf(nameTree bool, key int, empty bool) string {

@@ -25,12 +25,12 @@ import (
 	"io"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // Regression coverage for GHSA-jp42-qm45-2x6g: configured decoded-byte limit bypasses.
-// https://github.com/pdfcpu/pdfcpu/security/advisories/GHSA-jp42-qm45-2x6g
+// https://github.com/huzpsb/pdfcpu2/security/advisories/GHSA-jp42-qm45-2x6g
 // Fixtures keep allocations modest while exercising the four reported failure cases.
 
 func ghsaJP42Stream(t *testing.T, dict string, data []byte) []byte {

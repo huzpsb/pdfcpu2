@@ -20,10 +20,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	pdffont "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/font"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 func prepareCoreFontDict(ctx *model.Context, d types.Dict, owner int) error {

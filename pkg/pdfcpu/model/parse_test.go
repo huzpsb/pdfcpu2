@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // TestObjectParserRegularSpaceBytes preserves bytes outside the six PDF whitespace characters.

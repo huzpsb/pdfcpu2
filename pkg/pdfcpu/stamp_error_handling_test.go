@@ -26,11 +26,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/filter"
-	corefont "github.com/pdfcpu/pdfcpu/pkg/font"
-	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/pkg/filter"
+	corefont "github.com/huzpsb/pdfcpu2/pkg/font"
+	pdffont "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/font"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 type stampFailingWriter struct {

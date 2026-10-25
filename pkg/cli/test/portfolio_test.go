@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/cli"
+	"github.com/huzpsb/pdfcpu2/pkg/cli"
 )
 
 // TestPortfolioCommand verifies portfolio command.

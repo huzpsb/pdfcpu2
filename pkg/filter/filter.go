@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/huzpsb/pdfcpu2/pkg/log"
 )
 
 // PDF defines the following filters. See also 7.4 in the PDF spec.

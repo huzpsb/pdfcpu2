@@ -26,13 +26,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/internal/inputlimit"
-	"github.com/pdfcpu/pdfcpu/pkg/font"
-	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/primitives"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/internal/inputlimit"
+	"github.com/huzpsb/pdfcpu2/pkg/font"
+	pdffont "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/font"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/primitives"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
 )
 
 // ErrMissingJSONReader signals a missing required JSON input reader.

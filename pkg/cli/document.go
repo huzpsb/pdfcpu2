@@ -16,7 +16,7 @@ limitations under the License.
 
 package cli
 
-import "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+import "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 
 // ValidateCommand creates a new command to validate a file.
 func ValidateCommand(inFiles []string, conf *model.Configuration) *Command {

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
 )
 
 func TestConfigurationSchemaCommandErrorPreservesCause(t *testing.T) {

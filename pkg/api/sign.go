@@ -25,10 +25,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pdfcpu/pdfcpu/internal/contextutil"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/internal/contextutil"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/fault"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 // ReadSeekerAt supports PDF parsing and positional signature verification.
