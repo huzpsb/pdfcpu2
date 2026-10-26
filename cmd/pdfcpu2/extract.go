@@ -39,7 +39,7 @@ func extractCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "extract inFile outDir",
-		Short: "Extract images, fonts, content, pages or metadata",
+		Short: "Extract images, fonts, content, pages, text or metadata",
 		Long:  usageLongExtract,
 		Args:  cobra.ExactArgs(2),
 		RunE: wrapContextHandler(func(c context.Context, conf *model.Configuration, args []string) error {

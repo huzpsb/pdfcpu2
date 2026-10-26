@@ -16,12 +16,13 @@ limitations under the License.
 
 package main
 
-const usageLongExtract = `Export inFile's images, fonts, content or pages into outDir.
+const usageLongExtract = `Export inFile's images, fonts, content, pages, text or metadata.
 
       mode ... extraction mode
      pages ... Please refer to "pdfcpu selectedpages"
     inFile ... input PDF file, use - to read from stdin
     outDir ... output directory, use - with mode page and one selected page to write to stdout
+               with mode text outDir is the output text file, use - to write to stdout
 
  The extraction modes are:
 
@@ -30,9 +31,10 @@ const usageLongExtract = `Export inFile's images, fonts, content or pages into o
 content ... extract raw page content
    page ... extract single page PDFs
    meta ... extract all metadata (page selection does not apply)
+   text ... extract plain text (PDFBox compatible, works best after ocr)
 
 Pipeline example:
    aws s3 cp s3://acme-archive/contract.pdf - \
-      | pdfcpu extract -m page -p 3 - - \
-      | aws s3 cp - s3://acme-archive/pages/contract-page-3.pdf
+      | pdfcpu extract -m text - - \
+      | aws s3 cp - s3://acme-archive/contract.txt
 `

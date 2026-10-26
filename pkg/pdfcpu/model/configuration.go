@@ -250,6 +250,7 @@ const (
 	OCRPDF
 	RENDERPAGES
 	SOLIDIFYPAGES
+	OBFUSCATE
 )
 
 // AllowRemoveEncryption enables removing encryption during validation.

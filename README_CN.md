@@ -39,7 +39,7 @@ pdfcpu 的维护者 Horst Rutter 是 PDF Association 的成员。我敬佩他对
 
   来源：[PP-OCRv6 模型卡片](https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_small_rec_onnx)。这类专用模型也没有按页计算的 API 调用费用。
 - **与 PDFBox 兼容的文本提取。** `extract -m text` 遵循 Apache PDFBox 默认提取器的行为，并基于 1,200 多份不同时期、不同生成器的中文真实 PDF，通过与 PDFBox 的差分测试调整行为。
-- **页面渲染。** 自研的纯 Go 栅格化引擎（文本含 CJK／CID 字体、图像、渐变着色、透明组）可将页面输出为 PNG／JPEG（`render`）；`solidify` 将页面重建为纯图像页面，防止文本复制和内容修改。未内嵌字体的文本回退到内置的 vivo Sans 渲染。
+- **页面渲染。** 自研的纯 Go 栅格化引擎（文本含 CJK／CID 字体、图像、渐变着色、透明组）可将页面输出为 PNG／JPEG（`render`）；`solidify` 将页面重建为纯图像页面，防止文本复制和内容修改；`obfuscate` 对内嵌 CID 字体的 cmap／ToUnicode 映射做垃圾填充，渲染结果完全不变，而文本提取只能得到乱码。未内嵌字体的文本回退到内置的 vivo Sans 渲染。
 - **CJK 支持。** 文本提取支持 ToUnicode CMap（包括 Type42 和数组形式的 `bfrange`）、内嵌 TrueType cmap、旧式 GBK／Big5、Adobe-GB1／CNS1 CID 回退，以及最后兜底的 Latin-1。OCR 模型针对中文和英文训练。
 - **可重复执行的 OCR。** 已处理的图像会被标记，再次运行 `ocr` 时只处理新增内容。文本以不可见图层写入，并通过每张图像的页面变换进行映射，使选择位置与可见字形对齐。
 - **命令行与 API 集成。** 支持标准输入／输出流（`-`）、页面选择和 JSON 输出，Go API 支持通过 `context.Context` 取消操作。
@@ -52,6 +52,7 @@ pdfcpu 的维护者 Horst Rutter 是 PDF Association 的成员。我敬佩他对
 | 为扫描版 PDF 添加不可见的 OCR 文本层 | `pdfcpu2 ocr` | 可用 |
 | 页面渲染／栅格化 | `pdfcpu2 render` | 可用 |
 | 内容固化（以渲染图像替换页面内容） | `pdfcpu2 solidify` | 可用 |
+| 字形混淆（垃圾填充字体 cmap 与 ToUnicode CMap） | `pdfcpu2 obfuscate` | 可用 |
 
 ```sh
 # 文本提取
@@ -69,6 +70,9 @@ pdfcpu2 render -m jpg -q 90 --dpi 300 in.pdf outDir
 # 固化：栅格化页面并以其图像替换原内容（防复制／防修改）
 pdfcpu2 solidify in.pdf out.pdf                 # 无损 PNG 图像
 pdfcpu2 solidify -m jpg --dpi 200 in.pdf out.pdf
+
+# 混淆：对内嵌 CID 字体的映射做垃圾填充（渲染不变，提取为乱码）
+pdfcpu2 obfuscate in.pdf out.pdf
 ```
 
 Go API 示例：
@@ -89,6 +93,10 @@ err = api.RenderPagesFile(ctx, "in.pdf", "outDir", nil, o, conf)
 
 // 或以渲染图像替换页面内容：
 err = api.SolidifyFile(ctx, "in.pdf", "out.pdf", nil, o, conf)
+
+// 或对内嵌 CID 字体的映射做垃圾填充（渲染不变，提取为乱码）：
+stats, err := api.ObfuscateFile(ctx, "in.pdf", "out.pdf", conf)
+_ = stats // stats.FontFiles, stats.ToUnicode, stats.Skipped
 ```
 
 ## 原有 PDF 命令
