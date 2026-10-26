@@ -16,6 +16,8 @@ pdfcpu2 ocr scan.pdf scan_ocr.pdf && pdfcpu2 extract -m text scan_ocr.pdf -
 
 [项目 Wiki](https://github.com/huzpsb/pdfcpu2/wiki) 包含约 60 页文档，涵盖命令行用法、Go API 示例和入门指南。
 
+不想安装？还有**浏览器版**：<https://huzpsb.github.io/pdfcpu2/> —— 同一引擎编译为 WebAssembly，所有处理都在页面内本地完成，详见 [Web UI](https://github.com/huzpsb/pdfcpu2/wiki/Web-UI) 文档页。
+
 ## 动机
 
 pdfcpu 的维护者 Horst Rutter 是 PDF Association 的成员。我敬佩他对 PDF 标准的坚持，但我的确需要文本提取、OCR 等功能。尊重归尊重，这些需求并不会因此消失，所以我把它们加到了这个分支里，自己也在用。
@@ -23,6 +25,7 @@ pdfcpu 的维护者 Horst Rutter 是 PDF Association 的成员。我敬佩他对
 ## 功能
 
 - **单个二进制文件。** PP-OCRv6 检测和识别模型（约 6 MB）已嵌入可执行文件。OCR 可完全离线运行，无需 API 密钥或令牌，没有调用频率限制，数据也不会离开本机。支持 Windows、Linux 和 macOS 的 amd64、arm64 版本。
+- **可在浏览器中运行。** 同一引擎编译为 WebAssembly，驱动本地优先的网页应用 <https://huzpsb.github.io/pdfcpu2/> —— 加密／解密、OCR、固化、混淆、优化、文本提取、水印、拆分／合并、图片转 PDF、附件、签名与批处理全部在页面内完成，任何文件都不会被上传。
 - **纯 Go OCR 推理。** 模型基于纯 Go 引擎运行，使用 fp32 标量计算和 goroutine 并行，不需要 cgo、ONNX Runtime 或 Python。
 - **OCR 基准测试。** PaddlePaddle 公布的基准测试给出了 PP-OCRv6 与数个通用 VLM 的以下结果：
 

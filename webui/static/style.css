@@ -320,6 +320,7 @@ svg {
     overflow-y: auto;
     padding-bottom: 12px;
     scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
 }
 
 .nav-group {
@@ -386,6 +387,48 @@ svg {
 .nav-item .nav-label {
     flex: 1;
 }
+
+/* Scrollbars — slim, rounded and theme-aware instead of the chunky OS default.
+   Firefox: scrollbar-width/scrollbar-color set per container.
+   Chromium & Safari: the pseudo-elements below. */
+.nav::-webkit-scrollbar,
+.thumb-strip::-webkit-scrollbar,
+pre.report::-webkit-scrollbar,
+textarea.text-out::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.nav::-webkit-scrollbar-track,
+.thumb-strip::-webkit-scrollbar-track,
+pre.report::-webkit-scrollbar-track,
+textarea.text-out::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.nav::-webkit-scrollbar-thumb,
+.thumb-strip::-webkit-scrollbar-thumb,
+pre.report::-webkit-scrollbar-thumb,
+textarea.text-out::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border-radius: 99px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+.nav::-webkit-scrollbar-thumb:hover,
+.thumb-strip::-webkit-scrollbar-thumb:hover,
+pre.report::-webkit-scrollbar-thumb:hover,
+textarea.text-out::-webkit-scrollbar-thumb:hover {
+    background: var(--text-faint);
+    background-clip: padding-box;
+}
+
+.thumb-strip, pre.report, textarea.text-out {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+}
+
 
 .sidebar-foot {
     margin-top: auto;

@@ -18,6 +18,8 @@ This adds a searchable text layer to a scanned PDF and extracts the resulting te
 
 The [project wiki](https://github.com/huzpsb/pdfcpu2/wiki) contains about 60 pages of documentation, including CLI usage, Go API examples, and getting-started guides.
 
+No installation needed? A **browser version** is available at <https://huzpsb.github.io/pdfcpu2/> — the same engine compiled to WebAssembly, processing everything locally in the page. See the [Web UI](https://github.com/huzpsb/pdfcpu2/wiki/Web-UI) wiki page for what it covers.
+
 ## Motivation
 
 Horst Rutter, the maintainer of pdfcpu, is a member of the PDF Association. I admire his commitment to the PDF standard. But I genuinely need text extraction, OCR, and related features in my own work. Respect for his work does not remove that need, so I added them here and use them.
@@ -25,6 +27,7 @@ Horst Rutter, the maintainer of pdfcpu, is a member of the PDF Association. I ad
 ## Features
 
 - **Single binary.** The PP-OCRv6 detection and recognition models (about 6 MB) are embedded in the executable. OCR runs offline without API keys, tokens, rate limits, or data leaving the local machine. Windows, Linux, and macOS are supported on amd64 and arm64.
+- **Also runs in the browser.** The same engine compiled to WebAssembly powers a local-first web app at <https://huzpsb.github.io/pdfcpu2/> — encrypt/decrypt, OCR, solidify, obfuscate, optimize, text extraction, watermark, split/merge, images→PDF, attachments, signatures, and batch processing run entirely in the page. No file is ever uploaded.
 - **Pure Go OCR inference.** The models run on a pure Go engine using fp32 scalar math and goroutine-based parallelism. No cgo, ONNX Runtime, or Python is required.
 - **OCR benchmarks.** PaddlePaddle's published benchmark reports the following results for PP-OCRv6 and several general-purpose VLMs:
 

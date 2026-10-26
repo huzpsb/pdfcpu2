@@ -55,7 +55,10 @@ function fmtBytesLike(v) {
 function t(key) {
     const d = I18N[prefs.lang] || I18N.en;
     const v = d[key];
-    if (typeof v === 'function') return v();
+    // Parameterized entries (e.g. fileCount: (n) => ...) are returned as-is so
+    // call sites can invoke them: t('fileCount')(n). Calling them here would
+    // return a string and make those call sites throw "not a function".
+    if (typeof v === 'function') return v;
     if (v !== undefined) return v;
     const e = I18N.en[key];
     return e !== undefined ? e : key;
@@ -1597,7 +1600,12 @@ function initDropzone() {
     const dz = $('#dropzone');
     const input = $('#fileInput');
 
-    dz.addEventListener('click', () => input.click());
+    // The hidden input is a child of the dropzone: its own (bubbling) click
+    // must not re-trigger input.click(), otherwise the handler recurses into
+    // itself until the stack overflows and the picker never opens.
+    dz.addEventListener('click', (ev) => {
+        if (ev.target !== input) input.click();
+    });
     dz.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter' || ev.key === ' ') {
             ev.preventDefault();
