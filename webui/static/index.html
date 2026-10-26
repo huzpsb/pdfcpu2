@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta content="width=device-width, initial-scale=1" name="viewport">
+    <meta content="light dark" name="color-scheme">
+    <title>pdfcpu2 — local PDF workspace</title>
+    <link href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23187764'/%3E%3Cpath d='M10 7h8l5 5v13H10z' fill='none' stroke='white' stroke-width='2'/%3E%3Cpath d='M18 7v6h5M13 18h7M13 21h5' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E"
+          rel="icon">
+    <link href="style.css" rel="stylesheet">
+</head>
+<body>
+<!-- Local SVG sprite: the interface has no icon-font or network dependency. -->
+<svg aria-hidden="true" class="svg-sprite" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-logo" viewBox="0 0 24 24">
+        <path d="M6 2.75h8l4 4V21H6z"/>
+        <path d="M14 2.75V7h4M9 12h6M9 15.5h6M9 19h3"/>
+    </symbol>
+    <symbol id="i-encrypt" viewBox="0 0 24 24">
+        <rect height="11" rx="2" width="14" x="5" y="10"/>
+        <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>
+    </symbol>
+    <symbol id="i-decrypt" viewBox="0 0 24 24">
+        <rect height="11" rx="2" width="14" x="5" y="10"/>
+        <path d="M8 10V7a4 4 0 0 1 7.5-2M12 14v3"/>
+    </symbol>
+    <symbol id="i-ocr" viewBox="0 0 24 24">
+        <path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 8v8M12 8v8M16 8v8"/>
+    </symbol>
+    <symbol id="i-solidify" viewBox="0 0 24 24">
+        <rect height="18" rx="2" width="18" x="3" y="3"/>
+        <path d="m3 16 5-5 4 4 3-3 6 6M16 8h.01"/>
+    </symbol>
+    <symbol id="i-obfuscate" viewBox="0 0 24 24">
+        <path d="M3 12s3.5-6 9-6c1.7 0 3.2.5 4.5 1.3M21 12s-3.5 6-9 6c-1.7 0-3.2-.5-4.5-1.3M3 3l18 18M9.5 9.5a3.5 3.5 0 0 0 5 5"/>
+    </symbol>
+    <symbol id="i-optimize" viewBox="0 0 24 24">
+        <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5M3 3l6 6M21 3l-6 6M21 21l-6-6M3 21l6-6"/>
+    </symbol>
+    <symbol id="i-totext" viewBox="0 0 24 24">
+        <path d="M5 3h10l4 4v14H5zM15 3v5h4M8 12h8M8 16h6"/>
+    </symbol>
+    <symbol id="i-watermark" viewBox="0 0 24 24">
+        <path d="M5 3h14v18H5zM8 7h8M8 11h5M7 18l10-8M7 15l10-8"/>
+    </symbol>
+    <symbol id="i-split" viewBox="0 0 24 24">
+        <path d="M7 3H3v18h4M17 3h4v18h-4M12 2v20M9 8l3 4-3 4M15 8l-3 4 3 4"/>
+    </symbol>
+    <symbol id="i-merge" viewBox="0 0 24 24">
+        <path d="M4 4v5c0 2 1 3 3 3h10M20 4v5c0 2-1 3-3 3M12 12v9M8 17l4 4 4-4"/>
+    </symbol>
+    <symbol id="i-img2pdf" viewBox="0 0 24 24">
+        <rect height="18" rx="2" width="18" x="3" y="3"/>
+        <path d="m3 16 5-5 5 5 3-3 5 5M16 8h.01"/>
+    </symbol>
+    <symbol id="i-attachments" viewBox="0 0 24 24">
+        <path d="m8 12 6.5-6.5a3.5 3.5 0 0 1 5 5L10 20a5 5 0 0 1-7-7l9-9"/>
+    </symbol>
+    <symbol id="i-signatures" viewBox="0 0 24 24">
+        <path d="M4 19c4-1 4-8 6-8s-1 7 1 7 3-5 4-5 0 5 5 4M14 4l6 6M4 22h16"/>
+    </symbol>
+    <symbol id="i-batch" viewBox="0 0 24 24">
+        <path d="M8 5h13v16H8zM3 19V3h13M12 10h5M12 14h5"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24">
+        <path d="M12 5v14M5 12h14"/>
+    </symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24">
+        <path d="M12 16V3M7 8l5-5 5 5M4 14v7h16v-7"/>
+    </symbol>
+    <symbol id="i-file" viewBox="0 0 24 24">
+        <path d="M6 2h8l4 4v16H6zM14 2v5h4"/>
+    </symbol>
+    <symbol id="i-image" viewBox="0 0 24 24">
+        <rect height="18" rx="2" width="18" x="3" y="3"/>
+        <path d="m3 16 5-5 5 5 3-3 5 5M16 8h.01"/>
+    </symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24">
+        <rect height="11" rx="2" width="14" x="5" y="10"/>
+        <path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="m5 12 4 4L19 6"/>
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M18 6 6 18"/>
+    </symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/>
+    </symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24">
+        <path d="m9 6 6 6-6 6"/>
+    </symbol>
+    <symbol id="i-up" viewBox="0 0 24 24">
+        <path d="m6 14 6-6 6 6"/>
+    </symbol>
+    <symbol id="i-down" viewBox="0 0 24 24">
+        <path d="m6 10 6 6 6-6"/>
+    </symbol>
+    <symbol id="i-grip" viewBox="0 0 24 24">
+        <path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01"/>
+    </symbol>
+    <symbol id="i-download" viewBox="0 0 24 24">
+        <path d="M12 3v13M7 11l5 5 5-5M4 20h16"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect height="13" rx="2" width="12" x="8" y="8"/>
+        <path d="M16 8V3H3v13h5"/>
+    </symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24">
+        <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/>
+        <circle cx="12" cy="12" r="3"/>
+    </symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24">
+        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/>
+        <circle cx="12" cy="12" r="3"/>
+    </symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/>
+    </symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z"/>
+    </symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24">
+        <path d="M4 7h16M4 12h16M4 17h16"/>
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"/>
+        <path d="M12 11v6M12 7h.01"/>
+    </symbol>
+    <symbol id="i-error" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"/>
+        <path d="m9 9 6 6M15 9l-6 6"/>
+    </symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24">
+        <path d="M5 12h14M14 7l5 5-5 5"/>
+    </symbol>
+    <symbol id="i-star" viewBox="0 0 24 24">
+        <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>
+    </symbol>
+    <symbol id="i-github" viewBox="0 0 24 24">
+        <path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.87c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.56 9.56 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85V21c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/>
+    </symbol>
+</svg>
+
+<header class="topbar">
+    <div class="topbar-left">
+        <button aria-expanded="false" aria-label="Open tools" class="icon-button mobile-nav-toggle" id="navToggle"
+                type="button">
+            <svg>
+                <use href="#i-menu"/>
+            </svg>
+        </button>
+        <a aria-label="pdfcpu2 home" class="brand" href="./">
+            <span class="brand-mark"><svg><use href="#i-logo"/></svg></span>
+            <span class="brand-word">pdfcpu<span>2</span></span>
+        </a>
+        <span class="topbar-divider"></span>
+        <span class="product-label" data-i18n="workspace">PDF workspace</span>
+    </div>
+    <div class="top-actions">
+        <button class="github-star-button" id="starBtn" title="Star me on GitHub" type="button">
+            <svg class="github-icon">
+                <use href="#i-github"/>
+            </svg>
+            <svg class="star-icon">
+                <use href="#i-star"/>
+            </svg>
+            <span>Star me on GitHub</span></button>
+        <span class="local-badge"><span class="status-dot"></span><span
+                data-i18n="localOnly">Local processing</span></span>
+        <select aria-label="Language / 语言" class="language-select" id="langSel" title="Language / 语言">
+            <option value="en">EN</option>
+            <option value="zh">中文</option>
+        </select>
+        <button aria-label="Theme" class="icon-button" id="themeBtn" title="Theme" type="button">
+            <svg>
+                <use href="#i-sun"/>
+            </svg>
+        </button>
+        <button aria-label="Preferences" class="icon-button" id="prefsBtn" title="Preferences" type="button">
+            <svg>
+                <use href="#i-settings"/>
+            </svg>
+        </button>
+    </div>
+</header>
+
+<div class="app-shell">
+    <div class="nav-backdrop" hidden id="navBackdrop"></div>
+    <aside aria-label="PDF tools" class="sidebar" id="sidebar">
+        <div class="sidebar-heading" data-i18n="tools">TOOLS</div>
+        <nav class="nav" id="nav"></nav>
+        <div class="sidebar-foot">
+            <div class="engine-line"><span class="engine-dot" id="engineDot"></span>
+                <div class="engine-status" id="engineStatus"></div>
+            </div>
+            <p data-i18n="privacyNote">Your files never leave this device.</p>
+        </div>
+    </aside>
+
+    <main class="workspace">
+        <div class="workspace-intro">
+            <div>
+                <p class="eyebrow" data-i18n="workspaceEyebrow">PRIVATE BY DESIGN</p>
+                <h1 data-i18n="workspaceTitle">Work with your documents</h1>
+                <p data-i18n="workspaceSubtitle">Choose a tool, add your files, and get a result — all in your
+                    browser.</p>
+            </div>
+            <span class="wasm-badge">WebAssembly</span>
+        </div>
+
+        <div class="workbench">
+            <section aria-labelledby="filesHeading" class="panel files-panel" id="filesCard">
+                <div class="panel-head">
+                    <div class="panel-title-row">
+                        <span class="step-number">1</span>
+                        <div><h2 data-i18n="sourceFiles" id="filesHeading">Source files</h2>
+                            <p id="fileCount"></p></div>
+                    </div>
+                    <div class="file-head-actions">
+                        <button class="text-button" data-i18n="selectAll" hidden id="selectAllBtn" type="button">Select
+                            all
+                        </button>
+                        <button aria-label="Clear all" class="icon-button subtle" id="clearFilesBtn" title="Clear all"
+                                type="button">
+                            <svg>
+                                <use href="#i-trash"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div aria-describedby="dropHint" class="dropzone" id="dropzone" role="button" tabindex="0">
+                    <span class="dropzone-icon"><svg><use href="#i-plus"/></svg></span>
+                    <div><strong data-i18n="addFiles">Add PDFs or images</strong><span data-i18n="dropHintShort"
+                                                                                       id="dropHint">Drop files here or click to browse</span>
+                    </div>
+                    <input accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.webp,.gif,application/pdf,image/*" hidden
+                           id="fileInput" multiple type="file">
+                </div>
+                <div aria-live="polite" class="file-grid" id="fileGrid"></div>
+                <div class="selection-bar" hidden id="selectionBar"></div>
+            </section>
+
+            <section aria-labelledby="toolTitle" class="panel tool-panel" id="toolCard">
+                <div class="panel-head tool-panel-head">
+                    <div class="panel-title-row">
+                        <span class="step-number">2</span>
+                        <div><p class="section-kicker" data-i18n="configure">CONFIGURE & RUN</p>
+                            <h2 id="toolTitle"></h2></div>
+                    </div>
+                    <span class="tool-header-icon" id="toolIcon"></span>
+                </div>
+                <p class="tool-desc" id="toolDesc"></p>
+                <div class="tool-target" id="toolTarget"></div>
+                <form autocomplete="off" class="tool-form" id="toolForm"></form>
+                <div class="tool-footer">
+                    <span class="run-hint" id="runHint"></span>
+                    <button class="primary run-button" id="runBtn" type="button"><span id="runLabel"></span>
+                        <svg>
+                            <use href="#i-arrow"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="busy" hidden id="busy" role="status"><span class="spinner"></span><span
+                        id="busyText"></span><span data-i18n="busyHint">Keep this tab open</span></div>
+                <div aria-live="polite" class="result" hidden id="result"></div>
+            </section>
+        </div>
+        <footer class="workspace-footer"><span>pdfcpu2</span><span data-i18n="footerNote">Fast, private document tools. No uploads. No accounts.</span>
+        </footer>
+    </main>
+</div>
+
+<input hidden id="attachmentInput" multiple type="file">
+<div aria-atomic="true" aria-live="polite" class="toast-region" id="toastRegion"></div>
+
+<dialog aria-labelledby="starDialogTitle" class="dialog star-dialog" id="starDialog">
+    <form class="star-dialog-form" method="dialog">
+        <button aria-label="Close" class="icon-button star-dialog-close" type="submit" value="cancel">
+            <svg>
+                <use href="#i-close"/>
+            </svg>
+        </button>
+        <span class="star-dialog-icon"><svg class="github-icon"><use href="#i-github"/></svg></span>
+        <p class="eyebrow" data-i18n="starEyebrow">ENJOYING PDFCPU2?</p>
+        <h2 id="starDialogTitle">Star me on GitHub</h2>
+        <p data-i18n="starMessage">If this local PDF workspace is useful to you, a star helps others discover the
+            project and supports its development.</p>
+        <a class="primary star-dialog-link" href="https://github.com/huzpsb/pdfcpu2" id="starModalLink" rel="noopener noreferrer"
+           target="_blank">
+            <svg>
+                <use href="#i-star"/>
+            </svg>
+            <span>Star me on GitHub</span>
+            <svg class="star-link-arrow">
+                <use href="#i-arrow"/>
+            </svg>
+        </a>
+        <button class="star-later" data-i18n="starLater" type="submit" value="cancel">Maybe later</button>
+        <span class="star-note" data-i18n="starNote">Free & open source · no account needed to use the app</span>
+    </form>
+</dialog>
+
+<dialog class="dialog" id="prefsDialog">
+    <form class="prefs-form" method="dialog">
+        <div class="dialog-head">
+            <div><p class="eyebrow" data-i18n="preferences">PREFERENCES</p>
+                <h3 data-i18n="prefsTitle">Preferences</h3></div>
+            <button aria-label="Close" class="icon-button" type="submit" value="cancel">
+                <svg>
+                    <use href="#i-close"/>
+                </svg>
+            </button>
+        </div>
+        <div class="prefs-grid">
+            <label><span data-i18n="prefsLang">Language</span><select class="control" id="prefLang">
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+            </select></label>
+            <label><span data-i18n="prefsTheme">Theme</span><select class="control" id="prefTheme">
+                <option data-i18n="themeDark" value="dark">Dark</option>
+                <option data-i18n="themeLight" value="light">Light</option>
+                <option data-i18n="themeSystem" value="system">System</option>
+            </select></label>
+            <label><span data-i18n="prefsDpi">Preview resolution (DPI)</span><select class="control" id="prefDpi">
+                <option value="72">72</option>
+                <option value="96">96</option>
+                <option value="120">120</option>
+                <option value="150">150</option>
+            </select></label>
+            <label class="switch-row"><span><strong data-i18n="prefsAutoDl">Auto-download results</strong><small
+                    data-i18n="prefsAutoDlHint">Save each result as soon as it is ready</small></span><input
+                    id="prefAutoDl" role="switch" type="checkbox"></label>
+        </div>
+        <p class="prefs-note">
+            <svg>
+                <use href="#i-info"/>
+            </svg>
+            <span data-i18n="prefsNote">Preferences and the last used values of every form are stored in your browser (localStorage) only.</span>
+        </p>
+        <div class="dialog-actions">
+            <button class="secondary-button" data-i18n="cancel" value="cancel">Cancel</button>
+            <button class="primary" data-i18n="save" id="prefSave" value="ok">Save</button>
+        </div>
+    </form>
+</dialog>
+
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

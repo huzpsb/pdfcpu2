@@ -25,3 +25,9 @@ out_tmp/
 # Confidential OCR runtime experiments (never commit; deleted after Go port)
 ocr_rt/
 _scripts/ocr/
+
+# IDE
+.idea/
+
+# webui: built artifact (CI / build script regenerates it)
+webui/static/app.wasm

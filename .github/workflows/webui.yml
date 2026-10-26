@@ -1,0 +1,65 @@
+name: webui
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-webui
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Web-UI
+    runs-on: ubuntu-latest
+    # Only pushes whose head commit message starts with "ci:" trigger a build.
+    # pull_request and workflow_dispatch are always allowed.
+    if: >-
+      github.event_name != 'push' ||
+      startsWith(github.event.head_commit.message, 'ci:')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build app.wasm
+        run: |
+          GOOS=js GOARCH=wasm go build -trimpath -ldflags "-s -w" -o webui/static/app.wasm ./cmd/webui
+
+      - name: Vendor wasm_exec.js
+        run: |
+          if [ -f "$(go env GOROOT)/lib/wasm/wasm_exec.js" ]; then
+            cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" webui/static/wasm_exec.js
+          else
+            cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" webui/static/wasm_exec.js
+          fi
+
+      - name: Cache buster
+        run: |
+          printf '%s\n' "${GITHUB_SHA}" > webui/static/version.txt
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: webui/static
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
