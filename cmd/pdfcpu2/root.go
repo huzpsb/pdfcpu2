@@ -110,6 +110,8 @@ func commands() []*cobra.Command {
 		pagelayoutCmd(),
 		viewerprefCmd(),
 		ocrCmd(),
+		renderCmd(),
+		solidifyCmd(),
 
 		// Resource commands.
 		importCmd(),

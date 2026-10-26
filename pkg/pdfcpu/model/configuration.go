@@ -248,6 +248,8 @@ const (
 	REMOVESIGNATURES
 	ADDSIGNATURE
 	OCRPDF
+	RENDERPAGES
+	SOLIDIFYPAGES
 )
 
 // AllowRemoveEncryption enables removing encryption during validation.

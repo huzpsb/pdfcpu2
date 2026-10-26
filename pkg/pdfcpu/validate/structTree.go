@@ -31,6 +31,26 @@ import (
 
 var errUnsupportedPDFObject = errors.New("unsupported PDF object")
 
+// validateStructElementStringEntry validates an optional text string entry of
+// a structure element (ID, T, Alt, E, ActualText, Lang).
+//
+// These entries are accessibility metadata that no pdfcpu operation relies
+// on, and some generators emit text strings with corrupt UTF-16BE encoding.
+// Strict validation still fails on them; relaxed validation digests the
+// spec violation and continues, like other structure tree inconsistencies
+// in this file.
+func validateStructElementStringEntry(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, dictName, entryName string, sinceVersion model.Version) error {
+	_, err := validateStringEntry(xRefTable, d, ownerObjNr, dictName, entryName, OPTIONAL, sinceVersion, nil)
+	if err == nil {
+		return nil
+	}
+	if xRefTable.ValidationMode == model.ValidationStrict {
+		return err
+	}
+	model.ShowDigestedSpecViolationError(fmt.Errorf("%s.%s: %w", dictName, entryName, err))
+	return nil
+}
+
 type invalidStructElementKError struct {
 	err error
 }
@@ -532,8 +552,7 @@ func validateStructElementDictPart1(xRefTable *model.XRefTable, d types.Dict, ow
 
 	if useIDs {
 		// ID: optional, byte string
-		_, err := validateStringEntry(xRefTable, d, ownerObjNr, dictName, "ID", OPTIONAL, model.V10, nil)
-		if err != nil {
+		if err := validateStructElementStringEntry(xRefTable, d, ownerObjNr, dictName, "ID", model.V10); err != nil {
 			return err
 		}
 	}
@@ -584,7 +603,7 @@ func validateStructElementLang(xRefTable *model.XRefTable, d types.Dict, ownerOb
 		}
 	}
 
-	_, err := validateStringEntry(xRefTable, d, ownerObjNr, dictName, "Lang", OPTIONAL, sinceVersion, nil)
+	err := validateStructElementStringEntry(xRefTable, d, ownerObjNr, dictName, "Lang", sinceVersion)
 
 	return false, err
 }
@@ -607,8 +626,7 @@ func validateStructElementDictPart2(xRefTable *model.XRefTable, d types.Dict, ow
 	}
 
 	// T: optional, text string
-	_, err = validateStringEntry(xRefTable, d, ownerObjNr, dictName, "T", OPTIONAL, model.V10, nil)
-	if err != nil {
+	if err := validateStructElementStringEntry(xRefTable, d, ownerObjNr, dictName, "T", model.V10); err != nil {
 		return false, err
 	}
 
@@ -623,8 +641,7 @@ func validateStructElementDictPart2(xRefTable *model.XRefTable, d types.Dict, ow
 	}
 
 	// Alt: optional, text string
-	_, err = validateStringEntry(xRefTable, d, ownerObjNr, dictName, "Alt", OPTIONAL, model.V10, nil)
-	if err != nil {
+	if err := validateStructElementStringEntry(xRefTable, d, ownerObjNr, dictName, "Alt", model.V10); err != nil {
 		return false, err
 	}
 
@@ -633,8 +650,7 @@ func validateStructElementDictPart2(xRefTable *model.XRefTable, d types.Dict, ow
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		sinceVersion = model.V14
 	}
-	_, err = validateStringEntry(xRefTable, d, ownerObjNr, dictName, "E", OPTIONAL, sinceVersion, nil)
-	if err != nil {
+	if err := validateStructElementStringEntry(xRefTable, d, ownerObjNr, dictName, "E", sinceVersion); err != nil {
 		return false, err
 	}
 
@@ -643,7 +659,7 @@ func validateStructElementDictPart2(xRefTable *model.XRefTable, d types.Dict, ow
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		sinceVersion = model.V13
 	}
-	_, err = validateStringEntry(xRefTable, d, ownerObjNr, dictName, "ActualText", OPTIONAL, sinceVersion, nil)
+	err = validateStructElementStringEntry(xRefTable, d, ownerObjNr, dictName, "ActualText", sinceVersion)
 
 	return langName, err
 }

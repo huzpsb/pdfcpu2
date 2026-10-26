@@ -21,6 +21,7 @@ import (
 
 	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu"
 	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
+	"github.com/huzpsb/pdfcpu2/pkg/render"
 )
 
 // Command represents an execution context.
@@ -62,5 +63,6 @@ type Command struct {
 	Watermark         *model.Watermark
 	ViewerPreferences *model.ViewerPreferences
 	PageConf          *pdfcpu.PageConfiguration
+	Render            *render.Options
 	Conf              *model.Configuration
 }

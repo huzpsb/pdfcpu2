@@ -131,6 +131,8 @@ var dispatchTable = map[model.CommandMode]dispatchFunc{
 	model.IMPORTCERTIFICATES:      importCertificates,
 	model.VALIDATESIGNATURES:      validateSignaturesCommand,
 	model.REMOVESIGNATURES:        removeSignatures,
+	model.RENDERPAGES:             renderPages,
+	model.SOLIDIFYPAGES:           solidifyPages,
 }
 
 func configurationForMode(conf *model.Configuration, mode model.CommandMode) *model.Configuration {
