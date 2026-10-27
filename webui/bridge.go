@@ -80,6 +80,7 @@ func Run() {
 	op1("ocr", OCR)
 	op1("solidify", Solidify)
 	op1("totext", ToText)
+	op1("replace", Replace)
 	op0("obfuscate", Obfuscate)
 	op0("optimize", Optimize)
 

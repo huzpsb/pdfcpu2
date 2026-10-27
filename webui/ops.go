@@ -299,15 +299,14 @@ func Encrypt(c context.Context, data []byte, p Params) (*Result, error) {
 	}, nil
 }
 
-// Decrypt removes encryption from data.
+// Decrypt removes encryption from data. An empty user password is valid
+// (owner-password-only protection opens freely), so no password is required
+// upfront — decryption itself reports wrong passwords.
 func Decrypt(c context.Context, data []byte, p Params) (*Result, error) {
 	pw := p.Str("password", "")
 	conf := defaultConf()
 	conf.UserPW = p.Str("userPw", pw)
 	conf.OwnerPW = p.Str("ownerPw", pw)
-	if conf.UserPW == "" && conf.OwnerPW == "" {
-		return nil, errors.New("password required")
-	}
 
 	var buf bytes.Buffer
 	if err := api.Decrypt(c, bytes.NewReader(data), &buf, conf); err != nil {
@@ -368,6 +367,44 @@ func Solidify(c context.Context, data []byte, p Params) (*Result, error) {
 		Name:    "_solid.pdf",
 		Data:    buf.Bytes(),
 		Details: newDetails("dpi", o.DPI, "format", format),
+	}, nil
+}
+
+// Replace removes every occurrence of the find string and draws the
+// replacement with an embedded vivo Sans subset (see the replace command).
+func Replace(c context.Context, data []byte, p Params) (*Result, error) {
+	find := p.Str("find", "")
+	if find == "" {
+		return nil, errors.New("find text required")
+	}
+	repl := p.Str("replace", "")
+
+	conf := defaultConf()
+	ctx, err := readContext(c, data, conf)
+	if err != nil {
+		return nil, err
+	}
+	pageNrs, err := sortedPageNrs(c, ctx, p.Pages())
+	if err != nil {
+		return nil, err
+	}
+	n, err := pdfcpu.ReplaceTextPages(c, ctx, find, repl, pageNrs)
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return &Result{
+			Details: newDetails("occurrences", 0, "message", "replaceNone"),
+		}, nil
+	}
+	var buf bytes.Buffer
+	if err := api.WriteContext(c, ctx, &buf); err != nil {
+		return nil, err
+	}
+	return &Result{
+		Name:    "_replaced.pdf",
+		Data:    buf.Bytes(),
+		Details: newDetails("occurrences", n),
 	}, nil
 }
 

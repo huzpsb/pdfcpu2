@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package fallbackfont provides the embedded fallback font used to render
 // text with fonts that have no embedded font program (including the PDF core
-// fonts).
+// fonts) and to embed replacement glyphs for text replacement.
 //
 // The bundled font is vivo Sans Light (vivoSans-Light.ttf), licensed by vivo
 // under the vivo Sans Font Knowledge Property License Agreement, see

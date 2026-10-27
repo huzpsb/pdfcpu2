@@ -43,6 +43,7 @@ pdfcpu 的维护者 Horst Rutter 是 PDF Association 的成员。我敬佩他对
   来源：[PP-OCRv6 模型卡片](https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_small_rec_onnx)。这类专用模型也没有按页计算的 API 调用费用。
 - **与 PDFBox 兼容的文本提取。** `extract -m text` 遵循 Apache PDFBox 默认提取器的行为，并基于 1,200 多份不同时期、不同生成器的中文真实 PDF，通过与 PDFBox 的差分测试调整行为。
 - **页面渲染。** 自研的纯 Go 栅格化引擎（文本含 CJK／CID 字体、图像、渐变着色、透明组）可将页面输出为 PNG／JPEG（`render`）；`solidify` 将页面重建为纯图像页面，防止文本复制和内容修改；`obfuscate` 对内嵌 CID 字体的 cmap／ToUnicode 映射做垃圾填充，渲染结果完全不变，而文本提取只能得到乱码。未内嵌字体的文本回退到内置的 vivo Sans 渲染。
+- **文本替换。** `replace` 从内容流（页面内容与 Form XObject，匹配时忽略空格）中删除所有匹配文字，并在原位绘制替换文字——以视觉最左上的匹配字形为锚点，保留原文的文本矩阵、字号、间距、基线偏移、渲染模式与填充颜色。替换字形取自单个可跨次复用、增量扩展的 vivo Sans 嵌入子集，替换后的文字依旧可选中、可提取、可复制；粗体原文以填充加描边近似。输出写出前自动优化。
 - **CJK 支持。** 文本提取支持 ToUnicode CMap（包括 Type42 和数组形式的 `bfrange`）、内嵌 TrueType cmap、旧式 GBK／Big5、Adobe-GB1／CNS1 CID 回退，以及最后兜底的 Latin-1。OCR 模型针对中文和英文训练。
 - **可重复执行的 OCR。** 已处理的图像会被标记，再次运行 `ocr` 时只处理新增内容。文本以不可见图层写入，并通过每张图像的页面变换进行映射，使选择位置与可见字形对齐。
 - **命令行与 API 集成。** 支持标准输入／输出流（`-`）、页面选择和 JSON 输出，Go API 支持通过 `context.Context` 取消操作。
@@ -54,6 +55,7 @@ pdfcpu 的维护者 Horst Rutter 是 PDF Association 的成员。我敬佩他对
 | 纯文本提取（与 PDFBox 兼容） | `pdfcpu2 extract -m text` | 可用 |
 | 为扫描版 PDF 添加不可见的 OCR 文本层 | `pdfcpu2 ocr` | 可用 |
 | 页面渲染／栅格化 | `pdfcpu2 render` | 可用 |
+| 文本替换（内嵌 vivo Sans 子集） | `pdfcpu2 replace` | 可用 |
 | 内容固化（以渲染图像替换页面内容） | `pdfcpu2 solidify` | 可用 |
 | 字形混淆（垃圾填充字体 cmap 与 ToUnicode CMap） | `pdfcpu2 obfuscate` | 可用 |
 
@@ -76,6 +78,10 @@ pdfcpu2 solidify -m jpg --dpi 200 in.pdf out.pdf
 
 # 混淆：对内嵌 CID 字体的映射做垃圾填充（渲染不变，提取为乱码）
 pdfcpu2 obfuscate in.pdf out.pdf
+
+# 文本替换：删除匹配原文，原位绘制替换文字
+pdfcpu2 replace -f "旧文字" -r "新文字" in.pdf out.pdf
+pdfcpu2 replace -f "DRAFT" in.pdf out.pdf       # 替换为空 = 仅删除
 ```
 
 Go API 示例：
@@ -100,6 +106,9 @@ err = api.SolidifyFile(ctx, "in.pdf", "out.pdf", nil, o, conf)
 // 或对内嵌 CID 字体的映射做垃圾填充（渲染不变，提取为乱码）：
 stats, err := api.ObfuscateFile(ctx, "in.pdf", "out.pdf", conf)
 _ = stats // stats.FontFiles, stats.ToUnicode, stats.Skipped
+
+// 或原位替换文本（返回替换处数）：
+n, err = api.ReplaceTextFile(ctx, "in.pdf", "out.pdf", "旧文字", "新文字", nil, conf)
 ```
 
 ## 原有 PDF 命令
@@ -139,6 +148,6 @@ pdfcpu2 是 pdfcpu 的硬分支，独立维护，采用 Apache 2.0 许可证，�
 
 采用 Apache License 2.0，与上游一致（见 `LICENSE.txt`）。
 
-本软件内嵌 **vivo Sans Light** 字体，作为渲染未内嵌字体 PDF 文本时的回退字体。vivo Sans 由维沃移动通信有限公司依据《vivo Sans 字体知识产权许可协议》授权（见 `pkg/render/internal/fallbackfont/vivoSans-LICENSE.txt`）：须在本软件中特别注明使用了该字体；不得对其进行改编或二次开发，也不得单独对外分发该字体或其组件；字体副本中保留了版权声明与许可协议。使用 pdfcpu2 渲染文档时，输出图像仅享有该协议授予的使用 vivo Sans 创作作品的相关权利。
+本软件内嵌 **vivo Sans Light** 字体，作为渲染未内嵌字体 PDF 文本时的回退字体，并作为文本替换的字形来源。vivo Sans 由维沃移动通信有限公司依据《vivo Sans 字体知识产权许可协议》授权（见 `internal/fallbackfont/vivoSans-LICENSE.txt`）：须在本软件中特别注明使用了该字体；不得对其进行改编或二次开发，也不得单独对外分发该字体或其组件；字体副本中保留了版权声明与许可协议。使用 pdfcpu2 渲染文档时，输出图像仅享有该协议授予的使用 vivo Sans 创作作品的相关权利。
 
 内嵌的 Adobe CID 到 Unicode 映射表派生自 Adobe 的 UCS2 CMap 资源（Adobe BSD 风格许可证；版权声明保留在生成文件的头部）。

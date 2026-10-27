@@ -251,6 +251,7 @@ const (
 	RENDERPAGES
 	SOLIDIFYPAGES
 	OBFUSCATE
+	REPLACETEXT
 )
 
 // AllowRemoveEncryption enables removing encryption during validation.

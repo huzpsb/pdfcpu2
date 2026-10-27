@@ -40,6 +40,8 @@ type Command struct {
 	PWOld             *string
 	PWNew             *string
 	StringVal         string
+	FindString        *string
+	ReplaceString     *string
 	IntVal            int
 	BoolVal1          bool
 	BoolVal2          bool

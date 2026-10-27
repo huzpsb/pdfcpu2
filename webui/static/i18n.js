@@ -107,6 +107,8 @@ const I18N = {
         tool_decrypt: "Decrypt",
         tool_decrypt_desc: "Remove encryption. Provide the password that protects the file.",
         tool_ocr: "OCR",
+    tool_replace: "Replace text",
+    tool_replace_desc: "Delete every occurrence of a text and draw the replacement in place — position, size and color are preserved.",
         tool_ocr_desc: "Detect text in scanned images and add an invisible, selectable text layer.",
         tool_solidify: "Solidify",
         tool_solidify_desc: "Rasterize pages into images — text, vectors and metadata become pixels.",
@@ -158,6 +160,15 @@ const I18N = {
         // ocr
         f_ocr_pages: "Pages",
         f_ocr_note: "Recognized text becomes selectable & searchable; rendering is not changed. Browser OCR is single threaded — expect 1–3 minutes per scanned page.",
+
+        // replace
+        f_replace_find: "Find",
+        f_replace_find_hint: "Text to remove (spaces are ignored when matching)",
+        f_replace_with: "Replace with",
+        f_replace_with_hint: "Empty = delete only",
+        f_replace_note: "Replacement glyphs come from the embedded vivo Sans subset; the original font stays untouched. Horizontal text only.",
+        d_occurrences: "Occurrences replaced",
+        msg_replace_none: "No occurrence of the find text found — the file was not changed.",
 
         // solidify
         f_solidify_format: "Image format",
@@ -392,6 +403,8 @@ const I18N = {
         tool_decrypt: "解密",
         tool_decrypt_desc: "去除加密保护，需要提供相应密码。",
         tool_ocr: "OCR 文字识别",
+    tool_replace: "替换文字",
+    tool_replace_desc: "删除原文中所有匹配文字，并在原位绘制替换文字——位置、大小与颜色保持不变。",
         tool_ocr_desc: "识别扫描件图片中的文字，生成不可见、可选中复制的文本层。",
         tool_solidify: "固化",
         tool_solidify_desc: "把页面栅格化为图片——文字、矢量与元数据全部变成像素。",
@@ -439,6 +452,14 @@ const I18N = {
 
         f_ocr_pages: "页码",
         f_ocr_note: "识别出的文字可选中、可搜索，页面显示不变。浏览器端 OCR 为单线程运算——每个扫描页约需 1–3 分钟，请耐心等待。",
+
+        f_replace_find: "查找",
+        f_replace_find_hint: "要删除的原文（匹配时忽略空格）",
+        f_replace_with: "替换为",
+        f_replace_with_hint: "留空 = 仅删除",
+        f_replace_note: "替换字形来自内置 vivo Sans 子集，原字体保持不动。仅支持水平排版的文本。",
+        d_occurrences: "替换处数",
+        msg_replace_none: "未找到匹配的文字——文件未做修改。",
 
         f_solidify_format: "图片格式",
         f_solidify_format_png: "PNG（无损）",

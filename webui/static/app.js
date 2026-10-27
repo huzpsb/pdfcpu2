@@ -407,13 +407,13 @@ function download(name, data, mime) {
 
 const GROUPS = [
     ['security', ['encrypt', 'decrypt']],
-    ['content', ['ocr', 'solidify', 'obfuscate', 'optimize', 'totext', 'watermark']],
+    ['content', ['replace', 'ocr', 'solidify', 'obfuscate', 'optimize', 'totext', 'watermark']],
     ['pages', ['split', 'merge', 'img2pdf']],
     ['advanced', ['attachments', 'signatures']],
     ['batch', ['batch']],
 ];
 
-const BATCH_OPS = ['encrypt', 'decrypt', 'ocr', 'solidify', 'obfuscate', 'optimize', 'totext', 'watermark'];
+const BATCH_OPS = ['replace', 'encrypt', 'decrypt', 'ocr', 'solidify', 'obfuscate', 'optimize', 'totext', 'watermark'];
 
 const WM_POSITIONS = [
     ['c', 'c'], ['tl', 'tl'], ['tc', 'tc'], ['tr', 'tr'],
@@ -456,9 +456,20 @@ const TOOLS = {
         title: 'tool_decrypt', desc: 'tool_decrypt_desc', icon: 'decrypt',
         pick: 'single', filter: 'pdf', batch: true,
         fields: [
-            {k: 'password', t: 'password', label: 'f_decrypt_password', req: true, hint: 'f_decrypt_password_hint'},
+            {k: 'password', t: 'password', label: 'f_decrypt_password', hint: 'f_decrypt_password_hint'},
         ],
         exec: (v, file) => engine.call('decrypt', file.data, v),
+    },
+
+    replace: {
+        title: 'tool_replace', desc: 'tool_replace_desc', icon: 'replace',
+        pick: 'single', filter: 'pdf', batch: true, note: 'f_replace_note',
+        fields: [
+            {k: 'find', t: 'text', label: 'f_replace_find', req: true, hint: 'f_replace_find_hint'},
+            {k: 'replace', t: 'text', label: 'f_replace_with', hint: 'f_replace_with_hint'},
+            {k: 'pages', t: 'text', label: 'fld_pages', hint: 'fld_pages_hint', placeholder: '1-3, 5'},
+        ],
+        exec: (v, file) => engine.call('replace', file.data, v),
     },
 
     ocr: {
@@ -1152,6 +1163,7 @@ const DETAIL_LABELS = {
     skipped: 'd_skipped', files: 'd_files', chars: 'd_chars', pages: 'd_pages',
     added: 'd_added', removed: 'd_removed', algorithm: 'd_algorithm', keyLength: 'd_keyLength',
     perm: 'd_perm', dpi: 'd_dpi', format: 'd_format', count: 'd_count', inputs: 'd_inputs',
+    occurrences: 'd_occurrences',
 };
 
 function kvTable(details, skip) {
@@ -1228,6 +1240,12 @@ async function renderOpResult(res, sourceName) {
 
     if (toolId === 'ocr' && res.imagesProcessed === 0) {
         box.append(resultHead(true, t('msg_ocr_none')));
+        showResult(box);
+        return;
+    }
+
+    if (toolId === 'replace' && res.occurrences === 0) {
+        box.append(resultHead(true, t('msg_replace_none')));
         showResult(box);
         return;
     }

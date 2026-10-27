@@ -134,6 +134,7 @@ var dispatchTable = map[model.CommandMode]dispatchFunc{
 	model.RENDERPAGES:             renderPages,
 	model.SOLIDIFYPAGES:           solidifyPages,
 	model.OBFUSCATE:               obfuscate,
+	model.REPLACETEXT:             replaceText,
 }
 
 func configurationForMode(conf *model.Configuration, mode model.CommandMode) *model.Configuration {

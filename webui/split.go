@@ -187,6 +187,7 @@ func downloadName(name string) string {
 var batchCapable = map[string]bool{
 	"encrypt": true, "decrypt": true, "ocr": true, "solidify": true,
 	"obfuscate": true, "optimize": true, "totext": true, "watermark": true,
+	"replace": true,
 }
 
 // batchItem reports one batch file.
@@ -263,6 +264,8 @@ func runBatchOp(c context.Context, op string, data []byte, p Params, logo []byte
 		return Encrypt(c, data, p)
 	case "decrypt":
 		return Decrypt(c, data, p)
+	case "replace":
+		return Replace(c, data, p)
 	case "ocr":
 		return OCR(c, data, p)
 	case "solidify":

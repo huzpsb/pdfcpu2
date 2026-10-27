@@ -113,6 +113,7 @@ func commands() []*cobra.Command {
 		renderCmd(),
 		solidifyCmd(),
 		obfuscateCmd(),
+		replaceCmd(),
 
 		// Resource commands.
 		importCmd(),

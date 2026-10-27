@@ -31,8 +31,8 @@ import (
 	"golang.org/x/text/encoding/traditionalchinese"
 
 	"github.com/huzpsb/pdfcpu2/internal/corefont/metrics"
+	"github.com/huzpsb/pdfcpu2/internal/fallbackfont"
 	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/types"
-	"github.com/huzpsb/pdfcpu2/pkg/render/internal/fallbackfont"
 	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
