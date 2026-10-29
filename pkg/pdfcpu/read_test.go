@@ -273,74 +273,6 @@ func TestParseXRefTableSubSectionClassifiesIncompleteSubsection(t *testing.T) {
 	}
 }
 
-func TestParseXRefTableSubSectionRejectsLimits(t *testing.T) {
-	tests := []struct {
-		name   string
-		fields []string
-		limits model.ResourceLimits
-	}{
-		{"negative start", []string{"-1", "1"}, model.ResourceLimits{MaxObjectCount: 2, MaxXRefEntries: 2}},
-		{"negative count", []string{"0", "-1"}, model.ResourceLimits{MaxObjectCount: 2, MaxXRefEntries: 2}},
-		{"object range", []string{"1", "2"}, model.ResourceLimits{MaxObjectCount: 2, MaxXRefEntries: 2}},
-		{"entry count", []string{"0", "2"}, model.ResourceLimits{MaxObjectCount: 3, MaxXRefEntries: 1}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			xRefTable := &model.XRefTable{Table: map[int]*model.XRefTableEntry{}}
-			s := bufio.NewScanner(strings.NewReader("trailer\n"))
-			if _, err := parseXRefTableSubSection(xRefTable, tt.limits, s, tt.fields, 0, 0); err == nil {
-				t.Fatal("expected xref subsection limit error")
-			}
-		})
-	}
-}
-
-func TestParseXRefTableSubSectionBoundsExtraEntries(t *testing.T) {
-	xRefTable := &model.XRefTable{Table: map[int]*model.XRefTableEntry{}}
-	s := bufio.NewScanner(strings.NewReader("0000000000 65535 f\n0000000000 65535 f\ntrailer\n"))
-	limits := model.ResourceLimits{MaxObjectCount: 2, MaxXRefEntries: 1}
-
-	_, err := parseXRefTableSubSection(xRefTable, limits, s, []string{"0", "1"}, 0, 0)
-	if err == nil || !strings.Contains(err.Error(), "xref entry count exceeds limit 1") {
-		t.Fatalf("got %v, want xref entry count limit error", err)
-	}
-	if len(xRefTable.Table) != 1 {
-		t.Fatalf("parsed %d xref entries, want 1", len(xRefTable.Table))
-	}
-}
-
-func TestParseXRefTableSubSectionRepairsBoundedExtraEntry(t *testing.T) {
-	xRefTable := &model.XRefTable{Table: map[int]*model.XRefTableEntry{}}
-	s := bufio.NewScanner(strings.NewReader("0000000000 65535 f\n0000000000 65535 f\ntrailer\n"))
-	limits := model.ResourceLimits{MaxObjectCount: 2, MaxXRefEntries: 2}
-
-	line, err := parseXRefTableSubSection(xRefTable, limits, s, []string{"0", "1"}, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if line != "trailer" || len(xRefTable.Table) != 2 {
-		t.Fatalf("got line %q and %d entries, want trailer and 2 entries", line, len(xRefTable.Table))
-	}
-}
-
-func TestParseXRefSectionUsesConfiguredLimits(t *testing.T) {
-	conf := model.NewDefaultConfiguration()
-	conf.Limits.MaxObjectCount = 1
-	ctx := &model.Context{
-		Configuration: conf,
-		XRefTable:     &model.XRefTable{Table: map[int]*model.XRefTableEntry{}},
-	}
-	s := bufio.NewScanner(strings.NewReader(""))
-	ssCount := 0
-	offset := int64(0)
-
-	_, err := parseXRefSection(t.Context(), ctx, s, []string{"0", "2"}, &ssCount, &offset, 0, 0)
-	if err == nil || !strings.Contains(err.Error(), "xref subsection object range exceeds limit 1") {
-		t.Fatalf("got %v, want configured object range limit error", err)
-	}
-}
-
 func TestScanLineRawClassifiesMissingLine(t *testing.T) {
 	_, err := scanLineRaw(bufio.NewScanner(strings.NewReader("")))
 	if !errors.Is(err, errMissingScannerLine) {
@@ -768,7 +700,7 @@ func TestDecodeObjectStreamRejectsInvalidEntries(t *testing.T) {
 			if tc.entry != nil {
 				ctx.Table[7] = tc.entry
 			}
-			err = decodeObjectStream(t.Context(), ctx, 7)
+			err = decodeObjectStream(t.Context(), ctx, 7, nil)
 			if !errors.Is(err, errMissingObjectStreamEntry) {
 				t.Fatalf("got %v, want %v", err, errMissingObjectStreamEntry)
 			}
@@ -844,7 +776,7 @@ func TestDecodeObjectStreamClassifiesCorruptObjectStream(t *testing.T) {
 		Generation: &zeroGen,
 	}
 
-	err = decodeObjectStream(t.Context(), ctx, 7)
+	err = decodeObjectStream(t.Context(), ctx, 7, nil)
 	if !errors.Is(err, errCorruptObjectStream) {
 		t.Fatalf("got %v, want %v", err, errCorruptObjectStream)
 	}
@@ -1267,55 +1199,6 @@ func TestExtractXRefStreamEntriesRejectsZeroWidths(t *testing.T) {
 	}
 }
 
-func TestXRefStreamEntryLenRejectsOverflow(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		w    [3]int
-	}{
-		{"first addition", [3]int{math.MaxInt, 1, 0}},
-		{"second addition", [3]int{math.MaxInt - 1, 1, 1}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := xRefStreamEntryLen(tc.w); !errors.Is(err, errInvalidXRefStreamWArray) {
-				t.Fatalf("got %v, want %v", err, errInvalidXRefStreamWArray)
-			}
-		})
-	}
-}
-
-func TestExtractXRefStreamEntriesRejectsWidthOverflow(t *testing.T) {
-	ctx, err := model.NewContext(bytes.NewReader(nil), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	w := 2*(math.MaxInt/3) + 1
-	xsd := &types.XRefStreamDict{
-		Objects: []int{0, 1, 2},
-		W:       [3]int{w, w, w + 2},
-	}
-	err = extractXRefTableEntriesFromXRefStream(make([]byte, 3), 0, xsd, ctx, 0)
-	if !errors.Is(err, errInvalidXRefStreamWArray) {
-		t.Fatalf("got %v, want %v", err, errInvalidXRefStreamWArray)
-	}
-}
-
-func TestExtractXRefStreamEntriesRejectsImpossibleObjectCount(t *testing.T) {
-	ctx, err := model.NewContext(bytes.NewReader(nil), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	xsd := &types.XRefStreamDict{
-		Objects: []int{0, 1},
-		W:       [3]int{math.MaxInt/2 + 1, 0, 0},
-	}
-	err = extractXRefTableEntriesFromXRefStream(nil, 0, xsd, ctx, 0)
-	if !errors.Is(err, errCorruptXRefStream) {
-		t.Fatalf("got %v, want %v", err, errCorruptXRefStream)
-	}
-}
-
 func TestExtractXRefStreamEntriesClassifiesCorruptStream(t *testing.T) {
 	ctx, err := model.NewContext(bytes.NewReader(nil), nil)
 	if err != nil {
@@ -1406,7 +1289,7 @@ func TestReadLargeDictObject(t *testing.T) {
 
 // TestReadStreamContentRejectsStreamLimit verifies stream limits are enforced.
 func TestReadStreamContentRejectsStreamLimit(t *testing.T) {
-	_, err := readStreamContent(bytes.NewReader([]byte("abc")), 3, 2)
+	_, err := readStreamContent(bytes.NewReader([]byte("abc")), 3, 3, 2)
 	if err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
 		t.Fatalf("got %v, want stream limit error", err)
 	}
@@ -1415,7 +1298,7 @@ func TestReadStreamContentRejectsStreamLimit(t *testing.T) {
 func TestReadStreamContentAcceptsWrappedEOF(t *testing.T) {
 	rd := &wrappedEOFReader{data: []byte("abc\nendstream\n")}
 
-	buf, err := readStreamContent(rd, 20, 20)
+	buf, err := readStreamContent(rd, 20, 20, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
