@@ -504,27 +504,38 @@ func validateESSCertificateBinding(p7Signer pkcs7.SignerInfo, cert *x509.Certifi
 
 func essSigningCertificateAttribute(p7Signer pkcs7.SignerInfo) (asn1.ObjectIdentifier, asn1.RawValue, error) {
 	var (
-		oid   asn1.ObjectIdentifier
-		value asn1.RawValue
-		count int
+		v1count, v2count int
+		v1oid            asn1.ObjectIdentifier
+		v1value          asn1.RawValue
+		v2oid            asn1.ObjectIdentifier
+		v2value          asn1.RawValue
 	)
 	for _, attr := range p7Signer.AuthenticatedAttributes {
-		if !attr.Type.Equal(oidSigningCertificate) &&
-			!attr.Type.Equal(oidSigningCertificateV2) {
-			continue
+		switch {
+		case attr.Type.Equal(oidSigningCertificate):
+			v1count++
+			v1oid, v1value = attr.Type, attr.Value
+		case attr.Type.Equal(oidSigningCertificateV2):
+			v2count++
+			v2oid, v2value = attr.Type, attr.Value
 		}
-		count++
-		oid = attr.Type
-		value = attr.Value
 	}
-	if count != 1 {
+	// Real world tokens (e.g. issued by DigiCert) carry both the legacy
+	// SigningCertificate and the SigningCertificateV2 profile; prefer the
+	// stronger V2 binding in that case.
+	switch {
+	case v2count == 1:
+		return v2oid, v2value, nil
+	case v1count == 1 && v2count == 0:
+		return v1oid, v1value, nil
+	default:
 		return nil, asn1.RawValue{}, fmt.Errorf(
-			"%w: expected exactly one SigningCertificate or SigningCertificateV2 attribute, got %d",
+			"%w: expected one SigningCertificate or SigningCertificateV2 attribute, got %d+%d",
 			pkcs7.ErrMalformedAttribute,
-			count,
+			v1count,
+			v2count,
 		)
 	}
-	return oid, value, nil
 }
 
 func decodeESSCertificateBinding(oid asn1.ObjectIdentifier, value asn1.RawValue) (crypto.Hash, []byte, asn1.RawValue, error) {

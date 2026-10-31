@@ -185,7 +185,7 @@ func downloadName(name string) string {
 
 // batchCapable lists the operations the batch mode supports.
 var batchCapable = map[string]bool{
-	"encrypt": true, "decrypt": true, "ocr": true, "solidify": true,
+	"encrypt": true, "decrypt": true, "timestamp": true, "ocr": true, "solidify": true,
 	"obfuscate": true, "optimize": true, "totext": true, "watermark": true,
 	"replace": true,
 }
@@ -264,6 +264,8 @@ func runBatchOp(c context.Context, op string, data []byte, p Params, logo []byte
 		return Encrypt(c, data, p)
 	case "decrypt":
 		return Decrypt(c, data, p)
+	case "timestamp":
+		return Timestamp(c, data, p)
 	case "replace":
 		return Replace(c, data, p)
 	case "ocr":

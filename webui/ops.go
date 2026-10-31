@@ -98,6 +98,25 @@ func (p Params) Bool(k string, def bool) bool {
 	return def
 }
 
+// Flag reports the boolean value of k and whether k was supplied at all.
+// Unlike Bool it distinguishes "absent" from "false", which lets callers
+// leave document entries untouched that the user never configured.
+func (p Params) Flag(k string) (value, ok bool) {
+	if v, exists := p[k]; exists {
+		switch t := v.(type) {
+		case bool:
+			return t, true
+		case float64:
+			return t != 0, true
+		case string:
+			if b, err := strconv.ParseBool(strings.TrimSpace(t)); err == nil {
+				return b, true
+			}
+		}
+	}
+	return false, false
+}
+
 func (p Params) Float(k string, def float64) float64 {
 	if v, ok := p[k]; ok {
 		switch t := v.(type) {
@@ -209,6 +228,26 @@ func sortedPageNrs(c context.Context, ctx *model.Context, selectedPages []string
 
 // ---- probe ----
 
+// headerVersion extracts the PDF version from the file header, e.g. "1.7".
+// The header is plain text even in encrypted files; the effective version of
+// a rare catalog-/Version override may differ, the encrypt operation treats
+// those files as already upgraded.
+func headerVersion(data []byte) string {
+	n := len(data)
+	if n > 1024 {
+		n = 1024
+	}
+	i := bytes.Index(data[:n], []byte("%PDF-"))
+	if i < 0 || len(data) < i+8 {
+		return ""
+	}
+	s := string(data[i+5 : i+8])
+	if s[1] != '.' || s[0] < '0' || s[0] > '9' || s[2] < '0' || s[2] > '9' {
+		return ""
+	}
+	return s
+}
+
 // Probe inspects a PDF: page count and encryption state.
 func Probe(c context.Context, data []byte) (*Result, error) {
 	conf := defaultConf()
@@ -223,6 +262,7 @@ func Probe(c context.Context, data []byte) (*Result, error) {
 	return &Result{Details: newDetails(
 		"pageCount", n,
 		"encrypted", encrypted,
+		"pdfVersion", headerVersion(data),
 	)}, nil
 }
 
@@ -247,18 +287,112 @@ func RenderPage(c context.Context, data []byte, page int, dpi float64) (*Result,
 
 // ---- P0: security ----
 
-func permissionSet(name string) model.PermissionFlags {
-	switch strings.ToLower(name) {
+// permissionFlagDef maps one toggleable parameter to one user access
+// permission bit, see PDF 32000 table 22.
+type permissionFlagDef struct {
+	key  string // parameter name
+	bit  model.PermissionFlags
+	name string // canonical name reported in the result details
+}
+
+// permissionFlagDefs are the individually toggleable permission flags.
+// Bits 3-6 are interpreted by revision 2 handlers (RC4), bits 9-12 by
+// revision 3 and later handlers (AES, PDF 2.0); a handler simply ignores
+// the bits it does not implement.
+var permissionFlagDefs = []permissionFlagDef{
+	{"permPrintRev2", model.PermissionPrintRev2, "print"},
+	{"permModify", model.PermissionModify, "modify"},
+	{"permExtract", model.PermissionExtract, "extract"},
+	{"permAnnotate", model.PermissionModAnnFillForm, "annotate"},
+	{"permFillForms", model.PermissionFillRev3, "fillForms"},
+	{"permExtractRev3", model.PermissionExtractRev3, "extractRev3"},
+	{"permAssembleRev3", model.PermissionAssembleRev3, "assemble"},
+	{"permPrintRev3", model.PermissionPrintRev3, "printHi"},
+}
+
+// permissionFlags computes the user access permission bit set.
+// The legacy preset parameter ("perm": none|print|all) takes precedence
+// when present; otherwise the flags start from the view-only default set
+// with both print bits enabled (the former default preset).
+func permissionFlags(p Params) model.PermissionFlags {
+	switch preset := p.Str("perm", ""); preset {
 	case "all":
 		return model.PermissionsAll
 	case "none":
 		return model.PermissionsNone
-	default:
+	case "print":
 		return model.PermissionsPrint
 	}
+	f := model.PermissionsNone
+	for _, d := range permissionFlagDefs {
+		if p.Bool(d.key, d.bit == model.PermissionPrintRev2 || d.bit == model.PermissionPrintRev3) {
+			f |= d.bit
+		}
+	}
+	return f
+}
+
+// grantedPermissions lists the canonical names of all set permission flags.
+func grantedPermissions(f model.PermissionFlags) []string {
+	ss := []string{}
+	for _, d := range permissionFlagDefs {
+		if f&d.bit != 0 {
+			ss = append(ss, d.name)
+		}
+	}
+	return ss
+}
+
+// viewerPrefDef maps one toggleable parameter to one viewer preference,
+// see PDF 32000 table 147.
+type viewerPrefDef struct {
+	key string
+	set func(*model.ViewerPreferences, bool)
+}
+
+// viewerPrefDefs are the viewer preferences that encryption can apply
+// in the same pass, e.g. hideToolbar forces conforming viewers to hide
+// their tool bars while the document is open.
+var viewerPrefDefs = []viewerPrefDef{
+	{"hideToolbar", (*model.ViewerPreferences).SetHideToolBar},
+	{"hideMenubar", (*model.ViewerPreferences).SetHideMenuBar},
+	{"hideWindowUI", (*model.ViewerPreferences).SetHideWindowUI},
+	{"fitWindow", (*model.ViewerPreferences).SetFitWindow},
+	{"centerWindow", (*model.ViewerPreferences).SetCenterWindow},
+	{"displayDocTitle", (*model.ViewerPreferences).SetDisplayDocTitle},
+}
+
+// viewerPreferences collects the viewer preferences to apply and the
+// canonical names of those set to true. Only supplied keys are set;
+// absent keys leave the document untouched.
+func viewerPreferences(p Params) (*model.ViewerPreferences, []string) {
+	var vp *model.ViewerPreferences
+	names := []string{}
+	for _, d := range viewerPrefDefs {
+		v, ok := p.Flag(d.key)
+		if !ok {
+			continue
+		}
+		if vp == nil {
+			vp = &model.ViewerPreferences{}
+		}
+		d.set(vp, v)
+		if v {
+			names = append(names, d.key)
+		}
+	}
+	return vp, names
 }
 
 // Encrypt encrypts data and returns the protected PDF.
+// User access permissions are configured per flag (see permissionFlagDefs)
+// or through the legacy "perm" preset (none|print|all). Viewer preferences
+// (hideToolbar, hideMenubar, hideWindowUI, fitWindow, centerWindow,
+// displayDocTitle) are bound in the same pass for every supplied key.
+// pdf20 explicitly upgrades the output to PDF 2.0 (AES-256 only, turns the
+// deprecated R5 handler into the standard R6); enforcePrintScaling locks
+// PrintScaling=None via the PDF 2.0 Enforce entry and therefore requires
+// pdf20 unless the input already is PDF 2.0.
 func Encrypt(c context.Context, data []byte, p Params) (*Result, error) {
 	ownerPW := p.Str("ownerPw", "")
 	if ownerPW == "" {
@@ -266,37 +400,94 @@ func Encrypt(c context.Context, data []byte, p Params) (*Result, error) {
 	}
 
 	conf := defaultConf()
+	conf.Cmd = model.ENCRYPT
 	conf.UserPW = p.Str("userPw", "")
 	conf.OwnerPW = ownerPW
 	conf.EncryptUsingAES = p.Bool("aes", true)
-	keyLen := p.Int("keyLength", 256)
+	// AES keys are 128 or 256 bits - a 40 bit request has no AES variant and
+	// the engine would silently emit legacy RC4-40 (V1/R2). RC4 keys are 40
+	// or 128 bits. The algorithm specific key parameters win over the legacy
+	// shared "keyLength".
+	keyLen := 0
 	if conf.EncryptUsingAES {
+		keyLen = p.Int("keyLengthAes", 0)
+		if keyLen == 0 {
+			keyLen = p.Int("keyLength", 256)
+		}
 		if keyLen != 128 && keyLen != 256 {
 			keyLen = 256
 		}
-	} else if keyLen != 40 && keyLen != 128 {
-		keyLen = 128
+	} else {
+		keyLen = p.Int("keyLengthRc4", 0)
+		if keyLen == 0 {
+			keyLen = p.Int("keyLength", 128)
+		}
+		if keyLen != 40 && keyLen != 128 {
+			keyLen = 128
+		}
 	}
 	conf.EncryptKeyLength = keyLen
-	conf.Permissions = permissionSet(p.Str("perm", "print"))
+	conf.Permissions = permissionFlags(p)
+
+	pdf20 := p.Bool("pdf20", false)
+	enforcePrintScaling := p.Bool("enforcePrintScaling", false)
+	if (pdf20 || enforcePrintScaling) && (!conf.EncryptUsingAES || keyLen != 256) {
+		return nil, errors.New("PDF 2.0 output requires AES-256")
+	}
+
+	// One pass: read the context, bind requested viewer preferences and
+	// write everything back encrypted (api.WriteContext runs the encryption
+	// setup for model.ENCRYPT).
+	ctx, err := readContext(c, data, conf)
+	if err != nil {
+		return nil, err
+	}
+	if enforcePrintScaling && !pdf20 && ctx.XRefTable.Version() < model.V20 {
+		return nil, errors.New("enforce print scaling requires PDF 2.0 - enable PDF 2.0 output for this file")
+	}
+	if pdf20 && ctx.XRefTable.Version() < model.V20 {
+		v20 := model.V20
+		ctx.XRefTable.HeaderVersion = &v20
+	}
+
+	prefNames := []string{}
+	vp, names := viewerPreferences(p)
+	if enforcePrintScaling {
+		// The engine supports Enforce for PrintScaling only.
+		if vp == nil {
+			vp = &model.ViewerPreferences{}
+		}
+		vp.PrintScaling = model.PrintScalingFor("None")
+		vp.Enforce = []string{"PrintScaling"}
+		names = append(names, "enforcePrintScaling")
+	}
+	if vp != nil {
+		if ctx.ViewerPref == nil {
+			ctx.ViewerPref = &model.ViewerPreferences{}
+		}
+		ctx.ViewerPref.Populate(vp)
+		ctx.XRefTable.BindViewerPreferences()
+		prefNames = names
+	}
 
 	var buf bytes.Buffer
-	if err := api.Encrypt(c, bytes.NewReader(data), &buf, conf); err != nil {
+	if err := api.WriteContext(c, ctx, &buf); err != nil {
 		return nil, err
 	}
 	algo := "RC4"
 	if conf.EncryptUsingAES {
 		algo = "AES"
 	}
-	return &Result{
-		Name: "_enc.pdf",
-		Data: buf.Bytes(),
-		Details: newDetails(
-			"algorithm", algo,
-			"keyLength", keyLen,
-			"perm", p.Str("perm", "print"),
-		),
-	}, nil
+	details := newDetails(
+		"algorithm", algo,
+		"keyLength", keyLen,
+		"pdfVersion", ctx.XRefTable.Version().String(),
+		"permissions", grantedPermissions(conf.Permissions),
+	)
+	if len(prefNames) > 0 {
+		details["viewerPreferences"] = prefNames
+	}
+	return &Result{Name: "_enc.pdf", Data: buf.Bytes(), Details: details}, nil
 }
 
 // Decrypt removes encryption from data. An empty user password is valid
@@ -313,6 +504,28 @@ func Decrypt(c context.Context, data []byte, p Params) (*Result, error) {
 		return nil, err
 	}
 	return &Result{Name: "_dec.pdf", Data: buf.Bytes()}, nil
+}
+
+// Timestamp stamps data with an RFC 3161 document timestamp. It proves that
+// the document bytes existed at the TSA asserted time without identifying a
+// signer; only the document digest leaves the device. An empty tsa selects
+// the engine default (DigiCert); field names the signature field.
+func Timestamp(c context.Context, data []byte, p Params) (*Result, error) {
+	conf := defaultConf()
+	var buf bytes.Buffer
+	info, err := api.Timestamp(c, bytes.NewReader(data), &buf, p.Str("tsa", ""), p.Str("field", ""), conf)
+	if err != nil {
+		return nil, err
+	}
+	return &Result{
+		Name: "_ts.pdf",
+		Data: buf.Bytes(),
+		Details: newDetails(
+			"tsa", info.URL,
+			"genTime", info.GenTime.Format(time.RFC3339),
+			"tsaCert", info.CertSubject,
+		),
+	}, nil
 }
 
 // ---- P0: content ----

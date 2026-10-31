@@ -133,6 +133,7 @@ func commands() []*cobra.Command {
 		// Security commands.
 		encryptCmd(),
 		decryptCmd(),
+		timestampCmd(),
 		changeupwCmd(),
 		changeopwCmd(),
 		permissionsCmd(),

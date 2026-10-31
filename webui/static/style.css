@@ -1267,11 +1267,18 @@ textarea.text-out::-webkit-scrollbar-thumb:hover {
 
 .field.inline {
     flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
     min-height: 38px;
     padding: 8px 0;
+}
+
+.field.inline .hint {
+    order: 3;
+    flex-basis: 100%;
+    margin-top: -6px;
 }
 
 .field.inline > label {
@@ -1312,6 +1319,14 @@ textarea.text-out::-webkit-scrollbar-thumb:hover {
 .field.inline input[type="checkbox"]:checked, .switch-row input[type="checkbox"]:checked {
     background: var(--accent);
     border-color: var(--accent);
+}
+
+.field.inline.disabled {
+    opacity: .45;
+}
+
+.field.inline input[type="checkbox"]:disabled {
+    cursor: not-allowed;
 }
 
 .field.inline input[type="checkbox"]:checked::after, .switch-row input[type="checkbox"]:checked::after {
@@ -1385,6 +1400,55 @@ textarea.text-out::-webkit-scrollbar-thumb:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 14px;
     padding: 5px 0 3px;
+}
+
+/* Section heading inside a form / advanced options. */
+.field-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-top: 8px;
+    min-width: 0;
+}
+
+/* TSA line in the timestamp tool target. */
+.tsa-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface-subtle);
+    color: var(--text-soft);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+.tsa-line svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+}
+
+.tsa-line b {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.field-heading-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--text-soft);
+}
+
+.field-heading-hint {
+    color: var(--text-faint);
+    font-size: 9px;
+    line-height: 1.5;
 }
 
 .image-file-control {

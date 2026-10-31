@@ -16,6 +16,8 @@ limitations under the License.
 
 package main
 
+import "github.com/huzpsb/pdfcpu2/pkg/pdfcpu/sign"
+
 const (
 	passwordFileUsage = `
 
@@ -91,6 +93,23 @@ Pipeline example:
    aws s3 cp s3://acme-hr/secure/onboarding.pdf - \
       | pdfcpu decrypt --upw "$UPW" - - \
       | aws s3 cp - s3://acme-hr/plain/onboarding.pdf` + passwordFileUsage
+
+	usageLongTimestamp = `Append an RFC 3161 document timestamp proving the document has not been
+modified since the TSA asserted time. No signing certificate is involved -
+only the document digest is sent to the timestamp authority.
+
+      tsa ... timestamp authority URL (default=` + sign.DefaultTSAURL + `)
+    field ... signature field name shown in the reader's signature panel (default=TimestampN)
+    inFile ... input PDF file, use - to read from stdin
+   outFile ... output PDF file, use - to write to stdout
+
+Repeated timestamping extends the proof: every stamp covers all previous
+revisions. Verify with: pdfcpu signatures validate inFile
+
+Pipeline example:
+   aws s3 cp s3://acme-legal/contract.pdf - \
+      | pdfcpu timestamp - - \
+      | aws s3 cp - s3://acme-legal/contract-evidenced.pdf`
 
 	usageLongChangeUserPW = `Change the user password also known as the open doc password.
 

@@ -274,7 +274,8 @@ func TestESSCertificateBinding(t *testing.T) {
 }
 
 // TestESSCertificateBindingCardinality verifies a signer has exactly one
-// supported ESS signing-certificate attribute.
+// supported ESS signing-certificate attribute per profile; tokens carrying
+// both profiles (e.g. DigiCert) fall back to the stronger V2 binding.
 func TestESSCertificateBindingCardinality(t *testing.T) {
 	fixture := newDetachedP7SignerFixture(t, nil, nil)
 	v1 := timestampSigningCertificateAttributeV1(t, fixture.cert, false)
@@ -300,10 +301,10 @@ func TestESSCertificateBindingCardinality(t *testing.T) {
 			),
 		},
 		{
-			name: "BothVersions",
+			name: "DuplicateV2",
 			signer: appendTimestampAttribute(
 				t,
-				appendTimestampAttribute(t, fixture.signer, v1),
+				appendTimestampAttribute(t, fixture.signer, v2),
 				v2,
 			),
 		},
@@ -317,6 +318,13 @@ func TestESSCertificateBindingCardinality(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("BothVersionsPrefersV2", func(t *testing.T) {
+		signer := appendTimestampAttribute(t, appendTimestampAttribute(t, fixture.signer, v1), v2)
+		if err := validateESSCertificateBinding(signer, fixture.cert); err != nil {
+			t.Fatalf("both profiles must validate via V2: %v", err)
+		}
+	})
 }
 
 // TestESSCertificateBindingFailureClassification verifies malformed and

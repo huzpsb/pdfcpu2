@@ -38,6 +38,37 @@ func NewSignedData() (*SignedData, error) {
 	return &SignedData{sd: sd}, nil
 }
 
+// NewSignedDataWithContent initializes a PKCS7 SignedData with detached
+// content of contentType that is ready to be signed via AddSigner,
+// e.g. an RFC 3161 timestamp token over TSTInfo.
+func NewSignedDataWithContent(contentType asn1.ObjectIdentifier, content []byte) (*SignedData, error) {
+	if len(contentType) == 0 {
+		return nil, errors.New("pkcs7: signed data content type is missing")
+	}
+	if len(content) == 0 {
+		return nil, errors.New("pkcs7: signed data content is missing")
+	}
+	// CMS encodes the eContent as an OCTET STRING carrying the DER of the
+	// content value.
+	octet, err := asn1.Marshal(content)
+	if err != nil {
+		return nil, fmt.Errorf("pkcs7: signed data content: %w", err)
+	}
+	sd := signedData{
+		ContentInfo: contentInfo{
+			ContentType: contentType,
+			Content: asn1.RawValue{
+				Class:      asn1.ClassContextSpecific,
+				Tag:        0,
+				IsCompound: true,
+				Bytes:      octet,
+			},
+		},
+		Version: 1,
+	}
+	return &SignedData{sd: sd}, nil
+}
+
 // SignerInfoConfig are optional values to include when adding a signer
 type SignerInfoConfig struct {
 	ExtraSignedAttributes   []Attribute

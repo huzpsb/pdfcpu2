@@ -22,6 +22,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/huzpsb/pdfcpu2/internal/testtsa"
+	"github.com/huzpsb/pdfcpu2/pkg/api"
+	"github.com/huzpsb/pdfcpu2/pkg/pdfcpu/model"
 )
 
 const testPDF = "../pkg/testdata/test.pdf"
@@ -73,6 +78,338 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 	if _, err := Decrypt(t.Context(), enc.Data, Params{"password": "wrong"}); err == nil {
 		t.Fatal("wrong password must fail")
+	}
+}
+
+// permConf returns an owner-authenticated configuration for reading test
+// output back (user-password auth would hit the permission bit checks).
+func permConf() *model.Configuration {
+	conf := model.NewDefaultConfiguration()
+	conf.UserPW = "upw"
+	conf.OwnerPW = "opw"
+	return conf
+}
+
+func permissionsOf(t *testing.T, data []byte) model.PermissionFlags {
+	t.Helper()
+	p, err := api.GetPermissions(t.Context(), bytes.NewReader(data), permConf())
+	if err != nil {
+		t.Fatalf("get permissions: %v", err)
+	}
+	if p == nil {
+		t.Fatal("no permissions reported for encrypted file")
+	}
+	return model.PermissionFlags(uint16(*p))
+}
+
+func TestEncryptPermissionFlags(t *testing.T) {
+	data := readTestFile(t, testPDF)
+
+	// Omitted flags default to view + print, the former default preset.
+	def, err := Encrypt(t.Context(), data, Params{"ownerPw": "opw", "userPw": "upw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := permissionsOf(t, def.Data); got != model.PermissionsPrint {
+		t.Fatalf("default permissions = %#x, want print preset", got)
+	}
+
+	// Every flag cleared: view only.
+	none, err := Encrypt(t.Context(), data, Params{
+		"ownerPw": "opw", "userPw": "upw",
+		"permPrintRev2": false, "permPrintRev3": false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := permissionsOf(t, none.Data); got != model.PermissionsNone {
+		t.Fatalf("permissions = %#x, want none", got)
+	}
+	if names, _ := none.Details["permissions"].([]string); len(names) != 0 {
+		t.Fatalf("granted permissions = %v, want none", names)
+	}
+
+	// Single flags toggle single bits.
+	one, err := Encrypt(t.Context(), data, Params{
+		"ownerPw": "opw", "userPw": "upw",
+		"permPrintRev2": false, "permPrintRev3": false,
+		"permAnnotate": true, "permAssembleRev3": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := model.PermissionsNone | model.PermissionModAnnFillForm | model.PermissionAssembleRev3
+	if got := permissionsOf(t, one.Data); got != want {
+		t.Fatalf("permissions = %#x, want %#x", got, want)
+	}
+	if names, _ := one.Details["permissions"].([]string); len(names) != 2 {
+		t.Fatalf("granted permissions = %v", names)
+	}
+
+	// Every flag set: full access.
+	all := Params{"ownerPw": "opw", "userPw": "upw"}
+	for _, d := range permissionFlagDefs {
+		all[d.key] = true
+	}
+	everything, err := Encrypt(t.Context(), data, all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := permissionsOf(t, everything.Data); got != model.PermissionsAll {
+		t.Fatalf("permissions = %#x, want all", got)
+	}
+
+	// The legacy preset still overrides single flags.
+	preset, err := Encrypt(t.Context(), data, Params{"ownerPw": "opw", "userPw": "upw", "perm": "all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := permissionsOf(t, preset.Data); got != model.PermissionsAll {
+		t.Fatalf("preset permissions = %#x, want all", got)
+	}
+}
+
+func TestEncryptViewerPreferences(t *testing.T) {
+	data := readTestFile(t, testPDF)
+
+	// Without preference keys the document must stay untouched.
+	plain, err := Encrypt(t.Context(), data, Params{"ownerPw": "opw", "userPw": "upw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vp, _, err := api.ViewerPreferences(t.Context(), bytes.NewReader(plain.Data), permConf())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vp != nil {
+		t.Fatalf("unexpected viewer preferences: %+v", vp)
+	}
+	if _, ok := plain.Details["viewerPreferences"]; ok {
+		t.Fatal("viewerPreferences detail must be absent")
+	}
+
+	// Supplied keys are bound in the same pass.
+	enc, err := Encrypt(t.Context(), data, Params{
+		"ownerPw": "opw", "userPw": "upw",
+		"permPrintRev2": false, "permPrintRev3": false,
+		"hideToolbar": true, "fitWindow": true, "displayDocTitle": false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, _ := enc.Details["viewerPreferences"].([]string)
+	if len(names) != 2 || names[0] != "hideToolbar" || names[1] != "fitWindow" {
+		t.Fatalf("viewerPreferences detail = %v", names)
+	}
+
+	vp, _, err = api.ViewerPreferences(t.Context(), bytes.NewReader(enc.Data), permConf())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vp == nil {
+		t.Fatal("viewer preferences not written")
+	}
+	if vp.HideToolbar == nil || !*vp.HideToolbar {
+		t.Fatalf("HideToolbar not applied: %+v", vp)
+	}
+	if vp.FitWindow == nil || !*vp.FitWindow {
+		t.Fatalf("FitWindow not applied: %+v", vp)
+	}
+	if vp.DisplayDocTitle == nil || *vp.DisplayDocTitle {
+		t.Fatalf("DisplayDocTitle not applied: %+v", vp)
+	}
+	if vp.HideMenubar != nil {
+		t.Fatalf("HideMenubar must stay untouched: %+v", vp)
+	}
+
+	// The output stays a decryptable PDF.
+	if _, err := Decrypt(t.Context(), enc.Data, Params{"password": "upw"}); err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+}
+
+// encState reads back the encryption handler parameters of an encrypted PDF.
+func encState(t *testing.T, data []byte) (v, r, l int) {
+	t.Helper()
+	ctx, err := api.ReadContext(t.Context(), bytes.NewReader(data), permConf())
+	if err != nil {
+		t.Fatalf("read encrypted output: %v", err)
+	}
+	if ctx.E == nil {
+		t.Fatal("output not encrypted")
+	}
+	return ctx.E.V, ctx.E.R, ctx.E.L
+}
+
+func TestEncryptKeyLengths(t *testing.T) {
+	data := readTestFile(t, testPDF)
+
+	tests := []struct {
+		name    string
+		params  Params
+		v, r, l int
+	}{
+		// RC4-40 is the legacy V1/R2 handler; there is no 40 bit AES.
+		{"rc4-40", Params{"ownerPw": "opw", "userPw": "upw", "aes": false, "keyLengthRc4": "40"}, 1, 2, 40},
+		{"rc4-128", Params{"ownerPw": "opw", "userPw": "upw", "aes": false, "keyLengthRc4": "128"}, 4, 4, 128},
+		{"aes-128", Params{"ownerPw": "opw", "userPw": "upw", "aes": true, "keyLengthAes": "128"}, 4, 4, 128},
+		// AES-256 on a PDF 1.7 input stays V5/R5 (deprecated pre-2.0 variant).
+		{"aes-256", Params{"ownerPw": "opw", "userPw": "upw", "aes": true, "keyLengthAes": "256"}, 5, 5, 256},
+		// A 40 bit AES request must not degrade to RC4-40.
+		{"aes-40-clamped", Params{"ownerPw": "opw", "userPw": "upw", "aes": true, "keyLengthAes": "40"}, 5, 5, 256},
+		// Legacy shared keyLength parameter keeps working.
+		{"legacy-key", Params{"ownerPw": "opw", "userPw": "upw", "aes": false, "keyLength": "40"}, 1, 2, 40},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enc, err := Encrypt(t.Context(), data, tt.params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, r, l := encState(t, enc.Data)
+			if v != tt.v || r != tt.r || l != tt.l {
+				t.Fatalf("encrypt dict V/R/L = %d/%d/%d, want %d/%d/%d", v, r, l, tt.v, tt.r, tt.l)
+			}
+			if keyLen, _ := enc.Details["keyLength"].(int); keyLen != tt.l {
+				t.Fatalf("keyLength detail = %v, want %d", enc.Details["keyLength"], tt.l)
+			}
+			if _, err := Decrypt(t.Context(), enc.Data, Params{"password": "upw"}); err != nil {
+				t.Fatalf("decrypt: %v", err)
+			}
+		})
+	}
+}
+
+func TestEncryptEnforcePrintScaling(t *testing.T) {
+	data := readTestFile(t, testPDF) // PDF 1.7
+
+	// PDF 2.0 output requires AES-256.
+	if _, err := Encrypt(t.Context(), data, Params{
+		"ownerPw": "opw", "aes": false, "pdf20": true,
+	}); err == nil {
+		t.Fatal("PDF 2.0 output with RC4 must fail")
+	}
+
+	// Enforce on a 1.x file requires the explicit PDF 2.0 upgrade.
+	if _, err := Encrypt(t.Context(), data, Params{
+		"ownerPw": "opw", "userPw": "upw", "enforcePrintScaling": true,
+	}); err == nil {
+		t.Fatal("enforce without the PDF 2.0 upgrade must fail")
+	}
+
+	enc, err := Encrypt(t.Context(), data, Params{
+		"ownerPw": "opw", "userPw": "upw", "pdf20": true,
+		"permPrintRev2": false, "permPrintRev3": false,
+		"hideToolbar": true, "enforcePrintScaling": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	names, _ := enc.Details["viewerPreferences"].([]string)
+	wantNames := []string{"hideToolbar", "enforcePrintScaling"}
+	if len(names) != len(wantNames) || names[0] != wantNames[0] || names[1] != wantNames[1] {
+		t.Fatalf("viewerPreferences detail = %v, want %v", names, wantNames)
+	}
+	if v, _ := enc.Details["pdfVersion"].(string); v != "2.0" {
+		t.Fatalf("pdfVersion detail = %q, want 2.0", v)
+	}
+
+	// The file was upgraded to PDF 2.0 and uses the standard R6 handler.
+	if v, r, l := encState(t, enc.Data); v != 5 || r != 6 || l != 256 {
+		t.Fatalf("encrypt dict V/R/L = %d/%d/%d, want 5/6/256", v, r, l)
+	}
+
+	// Validation on re-read accepts the enforced PrintScaling entry.
+	vp, version, err := api.ViewerPreferences(t.Context(), bytes.NewReader(enc.Data), permConf())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *version != model.V20 {
+		t.Fatalf("effective version = %s, want 2.0", *version)
+	}
+	if vp == nil || vp.PrintScaling == nil || *vp.PrintScaling != model.PrintScalingNone {
+		t.Fatalf("PrintScaling not enforced to None: %+v", vp)
+	}
+	if len(vp.Enforce) != 1 || vp.Enforce[0] != "PrintScaling" {
+		t.Fatalf("Enforce = %v, want [PrintScaling]", vp.Enforce)
+	}
+	if vp.HideToolbar == nil || !*vp.HideToolbar {
+		t.Fatalf("HideToolbar not applied: %+v", vp)
+	}
+
+	dec, err := Decrypt(t.Context(), enc.Data, Params{"password": "upw"})
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+
+	// Enforce on an already upgraded (PDF 2.0) file needs no pdf20 flag.
+	enc2, err := Encrypt(t.Context(), dec.Data, Params{
+		"ownerPw": "opw", "userPw": "upw", "enforcePrintScaling": true,
+	})
+	if err != nil {
+		t.Fatalf("enforce on PDF 2.0 input: %v", err)
+	}
+	if v, r, l := encState(t, enc2.Data); v != 5 || r != 6 || l != 256 {
+		t.Fatalf("encrypt dict V/R/L = %d/%d/%d, want 5/6/256", v, r, l)
+	}
+	vp2, version2, err := api.ViewerPreferences(t.Context(), bytes.NewReader(enc2.Data), permConf())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *version2 != model.V20 || len(vp2.Enforce) != 1 || vp2.Enforce[0] != "PrintScaling" {
+		t.Fatalf("unexpected re-encryption state: version=%s vp=%+v", *version2, vp2)
+	}
+
+	// The plain PDF 2.0 upgrade without enforce also yields R6.
+	enc3, err := Encrypt(t.Context(), data, Params{
+		"ownerPw": "opw", "userPw": "upw", "pdf20": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, r, l := encState(t, enc3.Data); v != 5 || r != 6 || l != 256 {
+		t.Fatalf("encrypt dict V/R/L = %d/%d/%d, want 5/6/256", v, r, l)
+	}
+	if _, ok := enc3.Details["viewerPreferences"]; ok {
+		t.Fatal("viewerPreferences detail must be absent")
+	}
+}
+
+func TestTimestampOp(t *testing.T) {
+	tsa, err := testtsa.New(time.Date(2026, 10, 31, 15, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tsa.Close()
+
+	r, err := Timestamp(t.Context(), readTestFile(t, testPDF), Params{"tsa": tsa.URL()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Data) == 0 {
+		t.Fatal("no output")
+	}
+	if r.Name != "_ts.pdf" {
+		t.Fatalf("name = %s", r.Name)
+	}
+	if got, _ := r.Details["tsa"].(string); got != tsa.URL() {
+		t.Fatalf("tsa detail = %q", got)
+	}
+	genTime, _ := r.Details["genTime"].(string)
+	if genTime == "" {
+		t.Fatal("missing genTime detail")
+	}
+
+	// The signatures tool reports the stamped document timestamp.
+	sig, err := SigValidate(t.Context(), r.Data, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _ := sig.Details["report"].(string)
+	if !strings.Contains(report, "document timestamp") {
+		t.Fatalf("unexpected report:\n%s", report)
 	}
 }
 

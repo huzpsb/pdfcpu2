@@ -1,4 +1,4 @@
-/* pdfcpu2 webui 鈥?application logic (no framework, no external deps). */
+/* pdfcpu2 webui — application logic (no framework, no external deps). */
 'use strict';
 
 /* ============================= tiny DOM helpers ============================= */
@@ -79,7 +79,7 @@ function debounce(fn, ms) {
     };
 }
 
-/* Surface swallowed errors in the console 鈥?never debug blind. */
+/* Surface swallowed errors in the console — never debug blind. */
 function warn(context, err) {
     const msg = err && err.message ? err.message : String(err);
     console.warn('[webui] ' + context + ': ' + msg);
@@ -90,7 +90,10 @@ function warn(context, err) {
 const PREFS_KEY = 'pdfcpu2.webui.prefs';
 const LAST_VALUES_KEY = 'pdfcpu2.webui.lastValues';
 
-const DEFAULT_PREFS = {lang: 'en', theme: 'light', dpi: 96, autoDl: false};
+// Engine fallback when the preference is cleared.
+const DEFAULT_TSA = 'http://timestamp.digicert.com';
+
+const DEFAULT_PREFS = {lang: 'en', theme: 'light', dpi: 96, autoDl: false, tsa: 'https://tsa.868322.xyz/'};
 
 let prefs = (() => {
     try {
@@ -192,7 +195,7 @@ function renderEngineStatus() {
     if (engine.failed) {
         box.classList.add('err');
         if (dot) dot.classList.add('err');
-        box.textContent = t('engineFailed') + (engine.errorText ? ' 鈥?' + engine.errorText : '');
+        box.textContent = t('engineFailed') + (engine.errorText ? ' — ' + engine.errorText : '');
     } else if (engine.ready) {
         box.classList.add('ok');
         if (dot) dot.classList.add('ok');
@@ -289,6 +292,7 @@ async function addFiles(fileList) {
             pageCount: 0,
             encrypted: false,
             probeErr: '',
+            pdfVersion: '',
             isResult: false,
             ts: Date.now(),
         };
@@ -314,7 +318,17 @@ function renderTool() {
     renderToolChrome();
     renderFiles();
     renderToolTarget();
+    refreshConditionalFields();
     updateRunState();
+}
+
+/* Re-evaluate when/enableWhen conditions, e.g. after the selected file (and
+   with it its probed PDF version) changed. */
+function refreshConditionalFields() {
+    const tool = currentTool();
+    const form = $('#toolForm');
+    if (!tool || !form) return;
+    updateConditionalFields(tool, typeof tool.fields === 'function' ? tool.fields() : tool.fields, form);
 }
 
 async function probeFile(e) {
@@ -323,6 +337,7 @@ async function probeFile(e) {
         if (r.ok) {
             e.pageCount = r.pageCount || 0;
             e.encrypted = !!r.encrypted;
+            e.pdfVersion = r.pdfVersion || '';
         } else {
             e.probeErr = r.error;
             warn('probe ' + e.name, new Error(r.error));
@@ -345,6 +360,7 @@ function addResultEntry(name, data, kind) {
         pageCount: 0,
         encrypted: false,
         probeErr: '',
+        pdfVersion: '',
         isResult: true,
         ts: Date.now(),
     };
@@ -405,15 +421,27 @@ function download(name, data, mime) {
 
 /* ============================= tool registry ============================= */
 
+// activeFileIs20 reports whether the file(s) selected for the current tool
+// are already PDF 2.0 (per their probed header versions). In batch mode all
+// selected PDFs must be 2.0.
+function activeFileIs20() {
+    if (state.tool === 'batch') {
+        const files = state.multiIds.map(byId).filter((f) => f && f.kind === 'pdf');
+        return files.length > 0 && files.every((f) => f.pdfVersion === '2.0');
+    }
+    const f = byId(state.activeId);
+    return !!(f && f.kind === 'pdf' && f.pdfVersion === '2.0');
+}
+
 const GROUPS = [
-    ['security', ['encrypt', 'decrypt']],
+    ['security', ['encrypt', 'decrypt', 'timestamp']],
     ['content', ['replace', 'ocr', 'solidify', 'obfuscate', 'optimize', 'totext', 'watermark']],
     ['pages', ['split', 'merge', 'img2pdf']],
     ['advanced', ['attachments', 'signatures']],
     ['batch', ['batch']],
 ];
 
-const BATCH_OPS = ['replace', 'encrypt', 'decrypt', 'ocr', 'solidify', 'obfuscate', 'optimize', 'totext', 'watermark'];
+const BATCH_OPS = ['replace', 'encrypt', 'decrypt', 'timestamp', 'ocr', 'solidify', 'obfuscate', 'optimize', 'totext', 'watermark'];
 
 const WM_POSITIONS = [
     ['c', 'c'], ['tl', 'tl'], ['tc', 'tc'], ['tr', 'tr'],
@@ -435,18 +463,61 @@ const TOOLS = {
                 opts: [['true', 'f_encrypt_aes_aes'], ['false', 'f_encrypt_aes_rc4']]
             },
             {
-                k: 'keyLength',
+                k: 'keyLengthAes',
                 t: 'select',
                 label: 'f_encrypt_keyLength',
                 def: '256',
-                opts: [['256', '256 bit'], ['128', '128 bit'], ['40', '40 bit']]
+                opts: [['256', '256 bit'], ['128', '128 bit']],
+                when: (v) => v.aes !== 'false'
             },
             {
-                k: 'perm',
+                k: 'keyLengthRc4',
                 t: 'select',
-                label: 'f_encrypt_perm',
-                def: 'print',
-                opts: [['none', 'f_encrypt_perm_none'], ['print', 'f_encrypt_perm_print'], ['all', 'f_encrypt_perm_all']]
+                label: 'f_encrypt_keyLength',
+                def: '128',
+                opts: [['128', '128 bit'], ['40', '40 bit (legacy)']],
+                when: (v) => v.aes === 'false'
+            },
+            {
+                k: 'pdf20',
+                t: 'checkbox',
+                label: 'f_encrypt_pdf20',
+                hint: 'f_encrypt_pdf20_hint',
+                when: (v) => !activeFileIs20() && v.aes !== 'false' && String(v.keyLengthAes) === '256'
+            },
+            {
+                t: 'heading',
+                label: 'f_encrypt_group_perm',
+                hint: 'f_encrypt_group_perm_hint',
+                wide: true
+            },
+            {k: 'permPrintRev2', t: 'checkbox', label: 'f_encrypt_permPrintRev2', def: true},
+            {k: 'permPrintRev3', t: 'checkbox', label: 'f_encrypt_permPrintRev3', def: true},
+            {k: 'permModify', t: 'checkbox', label: 'f_encrypt_permModify'},
+            {k: 'permAnnotate', t: 'checkbox', label: 'f_encrypt_permAnnotate'},
+            {k: 'permExtract', t: 'checkbox', label: 'f_encrypt_permExtract'},
+            {k: 'permExtractRev3', t: 'checkbox', label: 'f_encrypt_permExtractRev3'},
+            {k: 'permFillForms', t: 'checkbox', label: 'f_encrypt_permFillForms'},
+            {k: 'permAssembleRev3', t: 'checkbox', label: 'f_encrypt_permAssembleRev3'},
+            {
+                t: 'heading',
+                label: 'f_encrypt_group_prefs',
+                hint: 'f_encrypt_group_prefs_hint',
+                wide: true
+            },
+            {k: 'hideToolbar', t: 'checkbox', label: 'f_encrypt_vp_hideToolbar'},
+            {k: 'hideMenubar', t: 'checkbox', label: 'f_encrypt_vp_hideMenubar'},
+            {k: 'hideWindowUI', t: 'checkbox', label: 'f_encrypt_vp_hideWindowUI'},
+            {k: 'fitWindow', t: 'checkbox', label: 'f_encrypt_vp_fitWindow'},
+            {k: 'centerWindow', t: 'checkbox', label: 'f_encrypt_vp_centerWindow'},
+            {k: 'displayDocTitle', t: 'checkbox', label: 'f_encrypt_vp_displayDocTitle'},
+            {
+                k: 'enforcePrintScaling',
+                t: 'checkbox',
+                label: 'f_encrypt_vp_enforcePrintScaling',
+                hint: 'f_encrypt_vp_enforcePrintScaling_hint',
+                when: (v) => v.aes !== 'false' && String(v.keyLengthAes) === '256',
+                enableWhen: (v) => activeFileIs20() || v.pdf20 === true
             },
         ],
         exec: (v, file) => engine.call('encrypt', file.data, v),
@@ -459,6 +530,18 @@ const TOOLS = {
             {k: 'password', t: 'password', label: 'f_decrypt_password', hint: 'f_decrypt_password_hint'},
         ],
         exec: (v, file) => engine.call('decrypt', file.data, v),
+    },
+
+    timestamp: {
+        title: 'tool_timestamp', desc: 'tool_timestamp_desc', icon: 'timestamp',
+        pick: 'single', filter: 'pdf', batch: true, note: 'f_timestamp_note',
+        fields: [
+            {k: 'field', t: 'text', label: 'f_ts_field', hint: 'f_ts_field_hint', placeholder: 'Timestamp1'},
+        ],
+        exec: (v, file) => engine.call('timestamp', file.data, {
+            tsa: (prefs.tsa || '').trim(),
+            field: v.field || ''
+        }),
     },
 
     replace: {
@@ -791,6 +874,12 @@ function renderField(toolId, f) {
     let input;
 
     switch (f.t) {
+        case 'heading': {
+            const head = el('div', {class: 'field-heading' + (f.wide ? ' wide' : '')});
+            head.append(el('span', {class: 'field-heading-title', text: labelText}));
+            if (f.hint) head.append(el('span', {class: 'field-heading-hint', text: t(f.hint)}));
+            return head;
+        }
         case 'password':
             input = el('input', {id, type: 'password', value: lastValue(toolId, f)});
             break;
@@ -804,7 +893,9 @@ function renderField(toolId, f) {
             const cb = el('input', {id, type: 'checkbox'});
             cb.checked = lastValue(toolId, f) === true || lastValue(toolId, f) === 'true';
             cb.dataset.k = f.k;
-            return el('div', {class: 'field inline'}, el('label', {for: id}, labelText), cb);
+            const row = el('div', {class: 'field inline'}, el('label', {for: id}, labelText), cb);
+            if (f.hint) row.append(el('span', {class: 'hint'}, t(f.hint)));
+            return row;
         }
         case 'select': {
             input = el('select', {id});
@@ -884,9 +975,20 @@ function currentFormValues(tool, form) {
 function updateConditionalFields(tool, fields, form) {
     const values = currentFormValues(tool, form);
     for (const f of fields) {
-        if (!f.when) continue;
-        const node = form.querySelector('[data-when="' + f.k + '"]');
-        if (node) node.hidden = !f.when(values);
+        if (!f.k) continue;
+        if (f.when) {
+            const node = form.querySelector('[data-when="' + f.k + '"]');
+            if (node) node.hidden = !f.when(values);
+        }
+        if (f.enableWhen) {
+            const input = form.querySelector('[data-k="' + f.k + '"]');
+            if (input) {
+                const disabled = !f.enableWhen(values);
+                input.disabled = disabled;
+                const wrap = input.closest('.field');
+                if (wrap) wrap.classList.toggle('disabled', disabled);
+            }
+        }
     }
 }
 
@@ -998,6 +1100,14 @@ function renderAttachmentTarget(box, active) {
     box.append(intake);
 }
 
+// appendTsaLine shows the timestamp authority the timestamp tool will use.
+function appendTsaLine(box) {
+    const url = (prefs.tsa || '').trim() || DEFAULT_TSA;
+    box.append(el('div', {class: 'tsa-line'},
+        el('span', {class: 'tsa-line-icon', html: icon('timestamp')}),
+        el('span', {}, el('b', {text: t('tsa_used') + ' '}), url)));
+}
+
 function renderToolTarget() {
     const tool = currentTool();
     const box = $('#toolTarget');
@@ -1015,8 +1125,10 @@ function renderToolTarget() {
     if (pick === 'single') {
         box.append(active ? targetFileRow(active) : el('div', {class: 'target-empty', html: icon('upload')},
             el('span', {text: t('pickOne')})));
+        if (state.tool === 'timestamp') appendTsaLine(box);
         return;
     }
+    if (state.tool === 'batch' && state.batchOp === 'timestamp') appendTsaLine(box);
 
     const head = el('div', {class: 'order-head'}, el('span', {text: t('orderHint')}));
     if (files.length) head.append(el('button', {
@@ -1162,9 +1274,19 @@ const DETAIL_LABELS = {
     imagesProcessed: 'd_imagesProcessed', fontFiles: 'd_fontFiles', toUnicode: 'd_toUnicode',
     skipped: 'd_skipped', files: 'd_files', chars: 'd_chars', pages: 'd_pages',
     added: 'd_added', removed: 'd_removed', algorithm: 'd_algorithm', keyLength: 'd_keyLength',
-    perm: 'd_perm', dpi: 'd_dpi', format: 'd_format', count: 'd_count', inputs: 'd_inputs',
+    pdfVersion: 'd_pdfVersion',
+    permissions: 'd_permissions', viewerPreferences: 'd_viewerPreferences',
+    tsa: 'd_tsa', genTime: 'd_genTime', tsaCert: 'd_tsaCert',
+    dpi: 'd_dpi', format: 'd_format', count: 'd_count', inputs: 'd_inputs',
     occurrences: 'd_occurrences',
 };
+
+// Keys whose array items are canonical engine names with i18n entries.
+const FLAG_DETAIL_KEYS = ['permissions', 'viewerPreferences'];
+
+function flagName(k, v) {
+    return FLAG_DETAIL_KEYS.includes(k) ? t('flag_' + v) : String(v);
+}
 
 function kvTable(details, skip) {
     const rows = [];
@@ -1175,7 +1297,7 @@ function kvTable(details, skip) {
         let val;
         if (k === 'inSize' || k === 'outSize') val = fmtSize(v);
         else if (k === 'savedPct') val = v + ' %';
-        else if (Array.isArray(v)) val = v.join(', ');
+        else if (Array.isArray(v)) val = v.map((x) => flagName(k, x)).join(', ');
         else val = String(v);
         if (val === '') continue;
         rows.push([t(DETAIL_LABELS[k] || k), val]);
@@ -1278,7 +1400,7 @@ async function renderOpResult(res, sourceName) {
     }
 
     if (res.report !== undefined) {
-        box.append(resultHead(true, (res.count || 0) + ' 脳'), el('pre', {class: 'report'}, res.report));
+        box.append(resultHead(true, t('sig_count')(res.count || 0)), el('pre', {class: 'report'}, res.report));
         showResult(box);
         return;
     }
@@ -1560,6 +1682,7 @@ function openPrefs() {
     $('#prefTheme').value = prefs.theme;
     $('#prefDpi').value = String(prefs.dpi);
     $('#prefAutoDl').checked = !!prefs.autoDl;
+    $('#prefTsa').value = prefs.tsa || '';
     $('#prefsDialog').showModal();
 }
 
@@ -1568,6 +1691,7 @@ function applyPrefsFromDialog() {
     prefs.theme = $('#prefTheme').value;
     prefs.dpi = parseInt($('#prefDpi').value, 10) || 96;
     prefs.autoDl = $('#prefAutoDl').checked;
+    prefs.tsa = $('#prefTsa').value.trim();
     savePrefs();
     applyTheme();
     $('#langSel').value = prefs.lang;

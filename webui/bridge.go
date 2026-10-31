@@ -77,6 +77,7 @@ func Run() {
 
 	op1("encrypt", Encrypt)
 	op1("decrypt", Decrypt)
+	op1("timestamp", Timestamp)
 	op1("ocr", OCR)
 	op1("solidify", Solidify)
 	op1("totext", ToText)

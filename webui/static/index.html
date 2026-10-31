@@ -24,6 +24,10 @@
         <rect height="11" rx="2" width="14" x="5" y="10"/>
         <path d="M8 10V7a4 4 0 0 1 7.5-2M12 14v3"/>
     </symbol>
+    <symbol id="i-timestamp" viewBox="0 0 24 24">
+        <circle cx="12" cy="13" r="8"/>
+        <path d="M12 9v4l2.5 2.5M9 2h6"/>
+    </symbol>
     <symbol id="i-ocr" viewBox="0 0 24 24">
         <path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 8v8M12 8v8M16 8v8"/>
     </symbol>
@@ -336,6 +340,9 @@
             <label class="switch-row"><span><strong data-i18n="prefsAutoDl">Auto-download results</strong><small
                     data-i18n="prefsAutoDlHint">Save each result as soon as it is ready</small></span><input
                     id="prefAutoDl" role="switch" type="checkbox"></label>
+            <label class="wide-row"><span><strong data-i18n="prefsTsa">Timestamp service (TSA)</strong><small
+                    data-i18n="prefsTsaHint">Used by the timestamp tool — only the document digest is sent. Empty = DigiCert default</small></span><input
+                    class="control" id="prefTsa" placeholder="https://…" spellcheck="false" type="url"></label>
         </div>
         <p class="prefs-note">
             <svg>

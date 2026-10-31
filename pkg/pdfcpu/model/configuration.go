@@ -252,6 +252,7 @@ const (
 	SOLIDIFYPAGES
 	OBFUSCATE
 	REPLACETEXT
+	TIMESTAMPPDF
 )
 
 // AllowRemoveEncryption enables removing encryption during validation.
